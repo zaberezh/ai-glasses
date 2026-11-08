@@ -11,14 +11,28 @@ android {
         applicationId = "app.glassmate"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 3
+        versionName = "0.3"
+    }
+
+    // Постоянный ключ подписи: без него каждая сборка на GitHub получает новый ключ,
+    // и Android отказывается ставить обновление поверх старой версии.
+    signingConfigs {
+        create("glassmate") {
+            storeFile = file("glassmate.jks")
+            storePassword = "glassmate"
+            keyAlias = "glassmate"
+            keyPassword = "glassmate"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("glassmate")
+        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("glassmate")
         }
     }
 
