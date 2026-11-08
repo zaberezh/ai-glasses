@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,7 +20,16 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk GlassMate.apk
       - uses: actions/upload-artifact@v4
         with:
           name: GlassMate-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: GlassMate.apk
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: GlassMate (последняя сборка)
+          body: Автоматическая сборка из ветки main. Скачайте GlassMate.apk и установите на телефон.
+          files: GlassMate.apk
+          make_latest: true
