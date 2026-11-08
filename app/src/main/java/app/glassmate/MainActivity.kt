@@ -38,7 +38,7 @@ class MainActivity : Activity(), Host {
     override val ui = MainScope()
 
     private lateinit var tabsHost: FrameLayout
-    private lateinit var overlay: FrameLayout
+    private lateinit var overlayHost: FrameLayout
     private val tabs = ArrayList<View>()
     private val navItems = ArrayList<Pair<ImageView, TextView>>()
     private val stack = ArrayList<View>()
@@ -97,10 +97,10 @@ class MainActivity : Activity(), Host {
             addView(tabsHost, lin(MATCH, 0, 1f))
             addView(nav)
         }
-        overlay = FrameLayout(this)
+        overlayHost = FrameLayout(this)
         setContentView(FrameLayout(this).apply {
             addView(main, FrameLayout.LayoutParams(MATCH, MATCH))
-            addView(overlay, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(overlayHost, FrameLayout.LayoutParams(MATCH, MATCH))
         })
         selectTab(0)
     }
@@ -121,12 +121,12 @@ class MainActivity : Activity(), Host {
         v.isClickable = true // не пропускать касания к экрану под ним
         if (v.background == null) v.setBackgroundColor(Col.BG)
         stack += v
-        overlay.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
+        overlayHost.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
     }
 
     override fun pop() {
         if (stack.isEmpty()) return
-        overlay.removeView(stack.removeAt(stack.size - 1))
+        overlayHost.removeView(stack.removeAt(stack.size - 1))
     }
 
     override fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
