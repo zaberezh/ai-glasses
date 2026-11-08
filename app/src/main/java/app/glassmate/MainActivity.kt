@@ -54,6 +54,17 @@ class MainActivity : Activity(), Host {
         window.navigationBarColor = Col.BG
         build()
         requestNeededPermissions()
+        tryAutoConnect()
+    }
+
+    /** Подключиться к последним очкам при запуске, если есть разрешение. */
+    private fun tryAutoConnect() {
+        val granted = Build.VERSION.SDK_INT < 31 ||
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        if (granted && Core.settings.lastDevice.isNotEmpty() && !Core.connected.value) {
+            GlassesService.start(this)
+            Core.autoConnect()
+        }
     }
 
     override fun onDestroy() {
@@ -159,5 +170,6 @@ class MainActivity : Activity(), Host {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (current == 2) album.refresh()
+        tryAutoConnect()
     }
 }

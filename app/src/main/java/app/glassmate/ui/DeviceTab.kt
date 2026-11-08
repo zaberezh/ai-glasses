@@ -1,10 +1,7 @@
 package app.glassmate.ui
 
 import android.content.res.ColorStateList
-import android.graphics.drawable.ClipDrawable
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
 import android.media.AudioManager
 import android.view.Gravity
 import android.view.View
@@ -33,9 +30,9 @@ fun deviceTab(h: Host): View = with(h.ctx) {
     }, lin(bottom = dp(16)))
 
     // --- карточка очков ---
-    val nameView = label("AI Glasses", 26f, bold = true).apply { maxLines = 1 }
+    val nameView = label("AI Glasses", 24f, bold = true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
     val battView = label("--", 15f, Col.SUB)
-    val statusView = label("Не подключено", 15f).apply { maxLines = 1 }
+    val statusView = label("Не подключено", 14f).apply { maxLines = 2 }
     val alert = label("!", 13f, bold = true).apply {
         gravity = Gravity.CENTER
         background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Col.RED) }
@@ -43,29 +40,35 @@ fun deviceTab(h: Host): View = with(h.ctx) {
     root.addView(card(18, onClick = { Actions.connectDialog(h) }).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dp(150)
-        addView(icon(R.drawable.ic_glasses_outline, Col.DIM, 120))
+        minimumHeight = dp(140)
+        addView(icon(R.drawable.ic_glasses_outline, Col.DIM, 96))
         addView(vbox().apply {
             addView(nameView)
             addView(hbox().apply {
                 addView(icon(R.drawable.ic_battery, Col.SUB, 18))
-                addView(battView, lin(WRAP, WRAP, start = dp(2)))
-                addView(icon(R.drawable.ic_bluetooth, Col.SUB, 18), lin(dp(18), dp(18), start = dp(14)))
-                addView(statusView, lin(0, WRAP, 1f, start = dp(2)))
-                addView(alert, lin(dp(20), dp(20), start = dp(4)))
-            }, lin(top = dp(10)))
-        }, lin(0, WRAP, 1f, start = dp(10)))
+                addView(battView, lin(WRAP, WRAP, start = dp(4)))
+            }, lin(top = dp(8)))
+            addView(hbox().apply {
+                addView(icon(R.drawable.ic_bluetooth, Col.SUB, 18))
+                addView(statusView, lin(0, WRAP, 1f, start = dp(4)))
+                addView(alert, lin(dp(22), dp(22), start = dp(6)))
+            }, lin(top = dp(6)))
+        }, lin(0, WRAP, 1f, start = dp(12)))
     }, lin(bottom = dp(14)))
 
     // --- три большие кнопки ---
     fun tile(res: Int, title: String, onClick: () -> Unit): Tile {
         val ic = icon(res, Col.TEXT, 36)
-        val tx = label(title, 15f).apply { gravity = Gravity.CENTER }
+        val tx = label(title, 14f).apply {
+            gravity = Gravity.CENTER
+            maxLines = 1
+            setAutoSizeTextTypeUniformWithConfiguration(9, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+        }
         val v = card(12, onClick = onClick).apply {
             gravity = Gravity.CENTER
             minimumHeight = dp(112)
             addView(ic)
-            addView(tx, lin(WRAP, WRAP, top = dp(8)))
+            addView(tx, lin(MATCH, dp(24), top = dp(8)))
         }
         return Tile(v, ic, tx)
     }
@@ -80,36 +83,48 @@ fun deviceTab(h: Host): View = with(h.ctx) {
 
     // --- громкость телефона (звук идёт в очки) ---
     val am = getSystemService(AudioManager::class.java)!!
-    val r = dp(18).toFloat()
+    val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    val volText = label("", 15f, Col.SUB)
+    var dragging = false
+    fun showVol(v: Int) { volText.text = "${v * 100 / maxOf(1, maxVol)}%" }
     val seek = SeekBar(this).apply {
-        max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        max = maxVol
         progress = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val layers = LayerDrawable(arrayOf(
-            rounded(Col.CARD2, r),
-            ClipDrawable(rounded(0xFF6B6D73.toInt(), r), Gravity.START, ClipDrawable.HORIZONTAL),
-        ))
-        layers.setId(0, android.R.id.background)
-        layers.setId(1, android.R.id.progress)
-        progressDrawable = layers
-        thumb = ColorDrawable(0)
-        splitTrack = false
-        minHeight = dp(34); maxHeight = dp(34)
-        setPadding(0, 0, 0, 0)
+        progressTintList = ColorStateList.valueOf(Col.TEXT)
+        progressBackgroundTintList = ColorStateList.valueOf(0xFF55575D.toInt())
+        thumbTintList = ColorStateList.valueOf(Col.TEXT)
         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                if (fromUser) am.setStreamVolume(AudioManager.STREAM_MUSIC, p, 0)
+                showVol(p)
+                if (fromUser) {
+                    try {
+                        am.setStreamVolume(AudioManager.STREAM_MUSIC, p, AudioManager.FLAG_SHOW_UI)
+                    } catch (e: Exception) {
+                        h.toast("Телефон не дал изменить громкость: ${e.message}")
+                    }
+                }
             }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
+            override fun onStartTrackingTouch(sb: SeekBar?) { dragging = true }
+            override fun onStopTrackingTouch(sb: SeekBar?) { dragging = false }
         })
     }
+    showVol(seek.progress)
     root.addView(card(18).apply {
         addView(hbox().apply {
             addView(icon(R.drawable.ic_volume, Col.SUB, 22))
-            addView(label("Громкость системы", 16f, Col.SUB), lin(WRAP, WRAP, start = dp(10)))
+            addView(label("Громкость", 16f, Col.SUB), lin(0, WRAP, 1f, start = dp(10)))
+            addView(volText)
         })
-        addView(seek, lin(MATCH, dp(34), top = dp(16)))
+        addView(seek, lin(MATCH, WRAP, top = dp(12)))
     }, lin(bottom = dp(14)))
+    // громкость могли поменять кнопками телефона или очков — следим
+    h.ui.launch {
+        while (true) {
+            kotlinx.coroutines.delay(700)
+            val v = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (!dragging && seek.progress != v) seek.progress = v
+        }
+    }
 
     // --- карточки функций ---
     fun bigCard(title: String, sub: String, res: Int, c1: Int, c2: Int, onClick: () -> Unit) = FrameLayout(this).apply {
@@ -122,8 +137,8 @@ fun deviceTab(h: Host): View = with(h.ctx) {
             }
         })
         addView(vbox(dp(14)).apply {
-            addView(label(title, 18f, bold = true).apply { maxLines = 2 })
-            addView(label(sub, 13f, 0xE6FFFFFF.toInt()).apply { maxLines = 3 })
+            addView(label(title, 17f, bold = true).apply { maxLines = 3 })
+            addView(label(sub, 13f, 0xE6FFFFFF.toInt()).apply { maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
         }, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
         setOnClickListener { onClick() }
     }
@@ -177,10 +192,29 @@ fun deviceTab(h: Host): View = with(h.ctx) {
     ), lin(bottom = dp(12)))
 
     // --- живые данные ---
+    h.ui.launch {
+        Core.connectError.collect { err ->
+            dialog().setTitle("Не удалось подключиться к очкам")
+                .setMessage(
+                    "Скорее всего, очки сейчас заняты приложением AIBuds — они держат только одно такое соединение.\n\n" +
+                        "1. Настройки → Приложения → AIBuds → Остановить.\n" +
+                        "2. Проверьте, что очки включены и подключены к телефону по Bluetooth.\n" +
+                        "3. Нажмите «Повторить».\n\nОшибка: $err"
+                )
+                .setPositiveButton("Повторить") { _, _ -> Core.autoConnect() }
+                .setNegativeButton("Закрыть", null)
+                .show()
+        }
+    }
     h.ui.launch { Core.deviceName.collect { nameView.text = it } }
     h.ui.launch {
         combine(Core.connected, Core.status) { c, s -> c to s }.collect { (connected, status) ->
-            statusView.text = if (connected) "Подключено" else if (status == "Подключение…") status else "Нажмите, чтобы подключить"
+            statusView.text = when {
+                connected -> "Подключено"
+                status == "Подключение…" -> status
+                status == "Ошибка подключения" -> "Не удалось подключиться"
+                else -> "Не подключены — нажмите"
+            }
             statusView.setTextColor(if (connected) Col.TEXT else Col.SUB)
             alert.visibility = if (connected || status == "Подключение…") View.GONE else View.VISIBLE
             listOf(video, camera, audio).forEach { it.view.alpha = if (connected) 1f else 0.45f }

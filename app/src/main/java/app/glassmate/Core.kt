@@ -54,6 +54,9 @@ object Core {
     /** Что делает ассистент: "", "Слушаю…", "Смотрю…", "Думаю…", "Отвечаю…". */
     val assistantState = MutableStateFlow("")
 
+    /** Сообщения об ошибке подключения — экран показывает их диалогом. */
+    val connectError = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4)
+
     fun addChat(item: ChatItem) = chat.update { (it + item).takeLast(100) }
 
     @Volatile var link: GlassesLink? = null
@@ -105,9 +108,28 @@ object Core {
                 log("Подключено к ${dev.name ?: address}")
                 watch(l)
                 Glasses(l).onConnected()
+                pollBattery(l)
             } catch (e: Exception) {
                 status.value = "Ошибка подключения"
                 log("Ошибка подключения: ${e.message}")
+                connectError.tryEmit(e.message ?: "неизвестная ошибка")
+            }
+        }
+    }
+
+    /** Подключиться к последним очкам, если ещё не подключены. */
+    fun autoConnect() {
+        val last = settings.lastDevice
+        if (last.isNotEmpty() && link == null && status.value != "Подключение…") connect(last)
+    }
+
+    /** Заряд раз в минуту — на случай, если очки не присылают его сами. */
+    private fun pollBattery(l: GlassesLink) {
+        scope.launch {
+            while (l.isOpen) {
+                kotlinx.coroutines.delay(60_000)
+                if (!l.isOpen) break
+                runCatching { Glasses(l).battery() }.getOrNull()?.let { battery.value = it }
             }
         }
     }

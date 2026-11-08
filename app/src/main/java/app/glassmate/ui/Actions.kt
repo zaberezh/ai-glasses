@@ -96,27 +96,44 @@ object Actions {
         }
     }
 
-    fun photo(h: Host) = runOnGlasses(h, "Фото") { g ->
-        if (g.takePhoto() == 0) "Фото сохранено на очках" else "Очки не сделали фото"
+    fun photo(h: Host) {
+        if (Core.glasses != null) h.toast("Снимаю… камера включается до 10 секунд")
+        runOnGlasses(h, "Фото") { g ->
+            when (g.takePhoto()) {
+                0 -> "Фото сохранено на очках"
+                null -> "Команда отправлена — очки отвечают с задержкой"
+                else -> "Очки отказались фотографировать (занята камера?)"
+            }
+        }
     }
 
     fun toggleVideo(h: Host) = runOnGlasses(h, "Видео") { g ->
         if (Core.recording.value != null) {
             g.stopCamera(); Core.recording.value = null; "Запись остановлена"
-        } else if (g.startVideo() == 0) {
-            Core.recording.value = "video"; "Идёт видеозапись"
-        } else "Очки не начали запись"
+        } else {
+            h.ui.launch { h.toast("Включаю камеру…") }
+            when (g.startVideo()) {
+                0 -> { Core.recording.value = "video"; "Идёт видеозапись" }
+                null -> { Core.recording.value = "video"; "Команда отправлена — проверьте индикатор на очках" }
+                else -> "Очки не начали запись"
+            }
+        }
     }
 
     fun toggleAudio(h: Host) = runOnGlasses(h, "Аудио") { g ->
         if (Core.recording.value != null) {
             g.stopCamera(); Core.recording.value = null; "Запись остановлена"
-        } else if (g.startAudio() == 0) {
-            Core.recording.value = "audio"; "Идёт аудиозапись"
-        } else "Очки не начали запись"
+        } else {
+            when (g.startAudio()) {
+                0 -> { Core.recording.value = "audio"; "Идёт аудиозапись" }
+                null -> { Core.recording.value = "audio"; "Команда отправлена — проверьте индикатор на очках" }
+                else -> "Очки не начали запись"
+            }
+        }
     }
 
     fun aiPhoto(h: Host) = runOnGlasses(h, "ИИ-снимок") { g ->
+        h.ui.launch { h.toast("Снимаю… до 10 секунд") }
         val raw = g.captureAiPhoto()
         Core.assistant.prepareImage(raw)
         Core.addChat(Core.ChatItem(true, "Снимок с камеры очков", Core.lastImage.value))

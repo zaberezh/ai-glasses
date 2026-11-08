@@ -26,6 +26,11 @@ class Glasses(private val link: GlassesLink) {
         }
         info[Info.FIRMWARE]?.let { Core.firmware.value = it.toHex(); Core.log("Прошивка: ${it.toHex()}") }
         info[Info.POWER]?.firstOrNull()?.let { Core.battery.value = parsePower(it) }
+        if (Core.battery.value == null) {
+            val p = deviceInfo(Info.POWER)[Info.POWER]
+            Core.log("Заряд (отдельный запрос): ${p?.toHex() ?: "нет ответа"}")
+            p?.firstOrNull()?.let { Core.battery.value = parsePower(it) }
+        }
     }
 
     suspend fun battery(): Pair<Int, Boolean>? =
@@ -77,15 +82,17 @@ class Glasses(private val link: GlassesLink) {
 
     private fun status(r: ByteArray?): Int? = r?.let { if (it.isEmpty()) 0 else it[0].toInt() and 0xFF }
 
-    /** Обычное фото — сохраняется в память очков. Возвращает код ответа (0 = ок). */
-    suspend fun takePhoto(): Int? = status(link.request(Cmd.CAMERA_SHOT, byteArrayOf(0)))
+    // Камера очков спит и просыпается ~8–10 с, поэтому ответа на команды камеры ждём долго.
 
-    suspend fun startVideo(): Int? = status(link.request(Cmd.START_VIDEO))
+    /** Обычное фото — сохраняется в память очков. Возвращает код ответа (0 = ок, null = нет ответа). */
+    suspend fun takePhoto(): Int? = status(link.request(Cmd.CAMERA_SHOT, byteArrayOf(0), CAMERA_TIMEOUT))
 
-    suspend fun startAudio(): Int? = status(link.request(Cmd.START_AUDIO))
+    suspend fun startVideo(): Int? = status(link.request(Cmd.START_VIDEO, timeoutMs = CAMERA_TIMEOUT))
+
+    suspend fun startAudio(): Int? = status(link.request(Cmd.START_AUDIO, timeoutMs = 15000))
 
     /** Остановить запись / выключить камеру и Wi-Fi очков. */
-    suspend fun stopCamera(): Int? = status(link.request(Cmd.CAMERA_OFF, timeoutMs = 5000))
+    suspend fun stopCamera(): Int? = status(link.request(Cmd.CAMERA_OFF, timeoutMs = 10000))
 
     suspend fun workState(): Int? = status(link.request(Cmd.WORK_STATE))
 
@@ -93,7 +100,7 @@ class Glasses(private val link: GlassesLink) {
      * ИИ-снимок: очки делают кадр и присылают JPEG кусками по Bluetooth
      * (уведомления 0xE3: [status][данные], status 1 — будет ещё, 0 — последний).
      */
-    suspend fun captureAiPhoto(timeoutMs: Long = 20000): ByteArray = coroutineScope {
+    suspend fun captureAiPhoto(timeoutMs: Long = 30000): ByteArray = coroutineScope {
         val out = ByteArrayOutputStream()
         val done = CompletableDeferred<Unit>()
         val collector = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -109,10 +116,10 @@ class Glasses(private val link: GlassesLink) {
             }
         }
         try {
-            val r = link.request(Cmd.CAMERA_SHOT, byteArrayOf(1))
-                ?: throw IOException("очки не ответили на команду снимка")
+            // Ответ может не прийти, пока камера просыпается, — тогда просто ждём сам снимок
+            val r = link.request(Cmd.CAMERA_SHOT, byteArrayOf(1), CAMERA_TIMEOUT)
             val code = status(r)
-            if (code != 0) Core.log("Ответ очков на ИИ-снимок: $code")
+            if (r != null && code != 0) Core.log("Ответ очков на ИИ-снимок: $code")
             val finished = withTimeoutOrNull(timeoutMs) { done.await() } != null
             val bytes = out.toByteArray()
             if (!finished && !looksLikeJpeg(bytes)) throw IOException("снимок не пришёл за ${timeoutMs / 1000} с")
@@ -138,6 +145,8 @@ class Glasses(private val link: GlassesLink) {
     }
 
     companion object {
+        const val CAMERA_TIMEOUT = 25_000L
+
         /** Байт заряда: бит 7 — заряжается, младшие 7 бит — процент. */
         fun parsePower(b: Byte): Pair<Int, Boolean> = (b.toInt() and 0x7F) to ((b.toInt() and 0x80) != 0)
     }
