@@ -60,6 +60,18 @@ class Settings(ctx: Context) {
         get() = p.getBoolean("aiKeyTrigger", false)
         set(v) = putB("aiKeyTrigger", v)
 
+    var wearDetection: Boolean
+        get() = p.getBoolean("wearDetection", true)
+        set(v) = putB("wearDetection", v)
+
+    var videoLimit: Int
+        get() = p.getInt("videoLimit", 12)
+        set(v) = p.edit().putInt("videoLimit", v).apply()
+
+    var audioLimit: Int
+        get() = p.getInt("audioLimit", 30)
+        set(v) = p.edit().putInt("audioLimit", v).apply()
+
     var lastDevice: String
         get() = str("lastDevice", "")
         set(v) = put("lastDevice", v)

@@ -21,7 +21,9 @@ object FrameType {
 
 /** Коды команд (из com.bluetrum.devicemanager.cmd.Command). */
 object Cmd {
+    const val POWER = 0x01               // уведомление: заряд [байт: бит 7 = заряжается, 0..6 = %]
     const val KEY = 0x22                 // настройка кнопок: TLV [keyType][1][function]
+    const val IN_EAR_DETECT = 0x26       // обнаружение ношения: [1/0]
     const val DEVICE_INFO = 0x27         // запрос информации: [type][0]...
     const val AI_CHAT_STATE = 0xB0
     const val AI_RECORD_STATE = 0xB1

@@ -36,6 +36,7 @@ class Assistant(private val ctx: Context) {
 
     fun clearHistory() {
         synchronized(history) { history.clear() }
+        Core.chat.value = emptyList()
         Core.log("История диалога очищена")
     }
 
@@ -51,8 +52,10 @@ class Assistant(private val ctx: Context) {
                 throw e
             } catch (e: Exception) {
                 Core.log("Ошибка ассистента: ${e.message}")
+                Core.addChat(Core.ChatItem(false, "⚠ Ошибка: ${e.message}"))
                 runCatching { voice.speak("Ошибка. ${e.message?.take(100) ?: ""}", Core.settings.language) }
             } finally {
+                Core.assistantState.value = ""
                 busy.set(false)
             }
         }
@@ -62,6 +65,7 @@ class Assistant(private val ctx: Context) {
         val s = Core.settings
         if (s.apiKey.isBlank()) {
             Core.log("Укажите API-ключ модели в настройках")
+            Core.addChat(Core.ChatItem(false, "Сначала укажите адрес и ключ API: AI → ⚙ Настройки ИИ-помощника."))
             voice.speak("Сначала укажите ключ API в приложении", s.language)
             return@coroutineScope
         }
@@ -75,23 +79,29 @@ class Assistant(private val ctx: Context) {
             } else null
 
         val question = typed ?: run {
+            Core.assistantState.value = "Слушаю…"
             voice.beep()
             voice.listen(s.language, s.useGlassesMic)
         }
         if (question.isNullOrBlank()) {
             Core.log("Вопрос не распознан")
+            Core.addChat(Core.ChatItem(false, "Не расслышал вопрос, попробуйте ещё раз."))
             photo?.cancel()
             return@coroutineScope
         }
         Core.log("Вы: $question")
 
+        if (photo != null) Core.assistantState.value = "Смотрю…"
         val jpeg = photo?.await()?.let { prepareImage(it) }
         if (jpeg != null) Core.log("Снимок приложен (${jpeg.size / 1024} КБ)")
+        Core.addChat(Core.ChatItem(true, question, if (jpeg != null) Core.lastImage.value else null))
+        Core.assistantState.value = "Думаю…"
 
         val turns = synchronized(history) { history.toList() }
         val answer = AiClient(s).ask(turns, question, jpeg).ifBlank { "Модель ничего не ответила." }
         Core.log("ИИ: $answer")
         Core.lastAnswer.value = answer
+        Core.addChat(Core.ChatItem(false, answer))
         synchronized(history) {
             history += AiClient.Turn("user", question)
             history += AiClient.Turn("assistant", answer)
@@ -100,6 +110,7 @@ class Assistant(private val ctx: Context) {
                 history.removeAt(0)
             }
         }
+        Core.assistantState.value = "Отвечаю…"
         voice.speak(answer, s.language)
     }
 

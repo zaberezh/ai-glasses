@@ -20,10 +20,26 @@ class Glasses(private val link: GlassesLink) {
         setTime()
         link.request(Cmd.COPROCESSOR_INFO, timeoutMs = 4000)
         val info = deviceInfo(Info.NAME, Info.FIRMWARE, Info.POWER)
-        info[Info.NAME]?.let { Core.log("Имя очков: ${it.cString()}") }
-        info[Info.FIRMWARE]?.let { Core.log("Прошивка: ${it.toHex()}") }
-        info[Info.POWER]?.let { Core.log("Батарея (сырые данные): ${it.toHex()}") }
+        info[Info.NAME]?.cString()?.takeIf { it.isNotBlank() }?.let {
+            Core.deviceName.value = it
+            Core.log("Имя очков: $it")
+        }
+        info[Info.FIRMWARE]?.let { Core.firmware.value = it.toHex(); Core.log("Прошивка: ${it.toHex()}") }
+        info[Info.POWER]?.firstOrNull()?.let { Core.battery.value = parsePower(it) }
     }
+
+    suspend fun battery(): Pair<Int, Boolean>? =
+        deviceInfo(Info.POWER)[Info.POWER]?.firstOrNull()?.let { parsePower(it) }
+
+    suspend fun setWearDetection(on: Boolean): Boolean =
+        link.request(Cmd.IN_EAR_DETECT, byteArrayOf(if (on) 1 else 0)) != null
+
+    /** Максимальная длительность видео / аудио на очках, в минутах. */
+    suspend fun setVideoLimit(minutes: Int): Boolean =
+        link.request(Cmd.GLASS_CONFIG, byteArrayOf(0x82.toByte(), 1, minutes.toByte())) != null
+
+    suspend fun setAudioLimit(minutes: Int): Boolean =
+        link.request(Cmd.GLASS_CONFIG, byteArrayOf(0x83.toByte(), 1, minutes.toByte())) != null
 
     suspend fun setTime(): Boolean {
         val nowMs = System.currentTimeMillis()
@@ -119,6 +135,11 @@ class Glasses(private val link: GlassesLink) {
         val r = link.request(Cmd.WIFI_CONFIG, wifiConfigPayload(1, ssid, password, 0)) ?: return false
         if (status(r) != 0) Core.log("Ответ очков на настройку Wi-Fi: ${status(r)}")
         return link.request(Cmd.FILE_MANAGE, timeoutMs = 10000) != null
+    }
+
+    companion object {
+        /** Байт заряда: бит 7 — заряжается, младшие 7 бит — процент. */
+        fun parsePower(b: Byte): Pair<Int, Boolean> = (b.toInt() and 0x7F) to ((b.toInt() and 0x80) != 0)
     }
 
     private fun wifiConfigPayload(mode: Int, ssid: String, password: String, channel: Int): ByteArray {

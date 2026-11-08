@@ -41,6 +41,21 @@ object Core {
     /** Адрес файлового сервера очков (приходит уведомлением при импорте по Wi-Fi). */
     val wifiFileAddress = MutableStateFlow<String?>(null)
 
+    val deviceName = MutableStateFlow("AI Glasses")
+    val firmware = MutableStateFlow("")
+    /** Заряд очков: процент и признак зарядки. */
+    val battery = MutableStateFlow<Pair<Int, Boolean>?>(null)
+    /** Что сейчас пишут очки: "video", "audio" или null. */
+    val recording = MutableStateFlow<String?>(null)
+
+    /** Сообщения чата с ИИ. */
+    data class ChatItem(val fromUser: Boolean, val text: String, val image: Bitmap? = null)
+    val chat = MutableStateFlow<List<ChatItem>>(emptyList())
+    /** Что делает ассистент: "", "Слушаю…", "Смотрю…", "Думаю…", "Отвечаю…". */
+    val assistantState = MutableStateFlow("")
+
+    fun addChat(item: ChatItem) = chat.update { (it + item).takeLast(100) }
+
     @Volatile var link: GlassesLink? = null
         private set
     @Volatile var deviceAddress: String? = null
@@ -76,6 +91,8 @@ object Core {
                     if (link === l) {
                         link = null
                         connected.value = false
+                        battery.value = null
+                        recording.value = null
                         status.value = "Отключено"
                         log("Соединение с очками закрыто")
                     }
@@ -100,6 +117,8 @@ object Core {
         link?.close()
         link = null
         connected.value = false
+        battery.value = null
+        recording.value = null
     }
 
     /** Разбор уведомлений, которые очки шлют сами. */
@@ -125,6 +144,7 @@ object Core {
                         log("Очки: сигнал ИИ-кнопки (${m.payload.toHex()})")
                         if (settings.aiKeyTrigger) assistant.trigger("ИИ-кнопка очков")
                     }
+                    Cmd.POWER -> m.payload.firstOrNull()?.let { battery.value = Glasses.parsePower(it) }
                     0x05 -> log("Очки сообщили новые настройки кнопок: ${m.payload.toHex()}")
                     else -> log("← 0x%02X: %s".format(m.cmd, m.payload.toHex(24)))
                 }
