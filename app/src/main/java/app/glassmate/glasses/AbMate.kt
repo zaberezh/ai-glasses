@@ -171,7 +171,11 @@ class FrameDecoder {
             val t = chunk[p + 2].toInt() and 0xFF
             val frag = chunk[p + 3].toInt() and 0xFF
             val len = chunk[p + 4].toInt() and 0xFF
-            if (t !in 1..3 || chunk.size - p - 5 < len) break
+            if (t !in 1..3 || chunk.size - p - 5 < len) {
+                // Не наш кадр: ищем дальше начало следующего кадра ABMate
+                p++
+                continue
+            }
             val payload = chunk.copyOfRange(p + 5, p + 5 + len)
             p += 5 + len
             val index = frag and 0x0F

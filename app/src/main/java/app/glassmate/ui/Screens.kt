@@ -182,6 +182,10 @@ fun settingsScreen(h: Host): View = h.screen("Настройки") { c ->
         }.first)
         gap(c)
         c.addView(arrowRow(R.drawable.ic_bluetooth, "Подключение очков") { Actions.connectDialog(h) }.first)
+        gap(c)
+        c.addView(switchRow(R.drawable.ic_list, "Подробный журнал", "Все байты обмена с очками — для отладки", s.verboseLog) {
+            s.verboseLog = it
+        })
     }
 }
 

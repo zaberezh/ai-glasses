@@ -57,7 +57,17 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
                 val n = input.read(buf)
                 if (n < 0) break
                 if (n == 0) continue
-                for (m in decoder.feed(buf.copyOf(n))) dispatch(m)
+                val chunk = buf.copyOf(n)
+                if (isStarBurst(chunk)) {
+                    answerStarBurst(chunk)
+                    continue
+                }
+                val msgs = decoder.feed(chunk)
+                if (Core.settings.verboseLog) {
+                    val big = msgs.any { it.cmd == Cmd.AI_PIC_PUSH || it.cmd == Cmd.LIVE_STREAM }
+                    if (!big) Core.log("⇠ ${chunk.toHex(40)}")
+                }
+                for (m in msgs) dispatch(m)
             }
         } catch (_: IOException) {
         } finally {
@@ -76,6 +86,26 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
         _notifications.tryEmit(m)
     }
 
+    /**
+     * Пакеты второго протокола (облачный ИИ StarBurst): [0x10][seq][0xF0][cmd][данные].
+     * AIBuds отвечает на «рукопожатие» 0x60 пакетом [0x00][seq][0xF0][0x60][шаг+1][0x00];
+     * без ответа очки повторяют его и медленнее обрабатывают остальные команды.
+     */
+    private fun isStarBurst(c: ByteArray) =
+        c.size >= 4 && (c[0].toInt() and 0xF0) == 0x10 && c[2] == 0xF0.toByte()
+
+    private fun answerStarBurst(c: ByteArray) {
+        val cmd = c[3].toInt() and 0xFF
+        if (Core.settings.verboseLog) Core.log("⇠ SB ${c.toHex(24)}")
+        if (cmd != 0x60) return
+        val step = if (c.size > 4) c[4].toInt() and 0xFF else 0
+        val answer = byteArrayOf(0x00, c[1], 0xF0.toByte(), 0x60, (step + 1).toByte(), 0x00)
+        try {
+            synchronized(writeLock) { output.write(answer); output.flush() }
+            if (Core.settings.verboseLog) Core.log("⇢ SB ${answer.toHex()}")
+        } catch (_: IOException) {}
+    }
+
     /** Отправить команду, не дожидаясь ответа. */
     fun send(cmd: Int, payload: ByteArray = ByteArray(0)) {
         if (!isOpen) throw IOException("Очки не подключены")
@@ -84,11 +114,14 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
             for (f in frames) output.write(f)
             output.flush()
         }
+        if (Core.settings.verboseLog) Core.log("⇢ ${frames.joinToString(" ") { it.toHex(24) }}")
     }
 
     /** Отправить команду и дождаться ответа. Возвращает payload ответа или null по таймауту. */
-    suspend fun request(cmd: Int, payload: ByteArray = ByteArray(0), timeoutMs: Long = 8000): ByteArray? =
-        cmdLocks.getOrPut(cmd) { Mutex() }.withLock {
+    suspend fun request(cmd: Int, payload: ByteArray = ByteArray(0), timeoutMs: Long = 8000): ByteArray? {
+        // Новая команда отменяет ожидание старой такой же — нажатия не копятся в очередь
+        pending[cmd]?.completeExceptionally(IOException("заменено новой командой"))
+        return cmdLocks.getOrPut(cmd) { Mutex() }.withLock {
             val d = CompletableDeferred<ByteArray>()
             pending[cmd] = d
             val t0 = SystemClock.elapsedRealtime()
@@ -103,6 +136,7 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
                 pending.remove(cmd, d)
             }
         }
+    }
 
     fun close() {
         if (!isOpen) return

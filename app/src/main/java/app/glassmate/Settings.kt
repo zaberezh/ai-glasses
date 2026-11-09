@@ -72,6 +72,11 @@ class Settings(ctx: Context) {
         get() = p.getInt("audioLimit", 30)
         set(v) = p.edit().putInt("audioLimit", v).apply()
 
+    /** Писать в журнал все байты обмена с очками (для отладки). */
+    var verboseLog: Boolean
+        get() = p.getBoolean("verboseLog", true)
+        set(v) = putB("verboseLog", v)
+
     var lastDevice: String
         get() = str("lastDevice", "")
         set(v) = put("lastDevice", v)
