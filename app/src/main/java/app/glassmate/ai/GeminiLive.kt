@@ -92,6 +92,8 @@ object GeminiLive {
                 jobs += Core.scope.launch { frameLoop() }
                 state.value = "Слушаю и смотрю"
                 Core.addChat(Core.ChatItem(false, "🔴 Live-режим включён. Говорите — я слышу и вижу через очки."))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // остановлено пользователем во время подключения — это не ошибка
             } catch (e: Exception) {
                 Core.log("Live: ошибка запуска — ${e.message}")
                 Core.addChat(Core.ChatItem(false, "⚠ Live не запустился: ${e.message}"))

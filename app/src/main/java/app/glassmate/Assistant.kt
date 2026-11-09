@@ -144,7 +144,7 @@ class Assistant(private val ctx: Context) {
         synchronized(history) {
             history += AiClient.Turn("user", question)
             history += AiClient.Turn("assistant", answer)
-            while (history.size > 12) {
+            while (history.size > 8) {
                 history.removeAt(0)
                 history.removeAt(0)
             }
@@ -164,12 +164,12 @@ class Assistant(private val ctx: Context) {
             RegexOption.IGNORE_CASE
         )
         private val followUpRx = Regex(
-            "^(а |и |ещё|еще|а если|а сколько|а какой|а какая|а что|а где|а кто|а почему|а как|подробнее|расскажи (ещё|еще|подробнее)|он |она |оно |они |его |её |ее |их )",
+            "^(а (если|сколько|какой|какая|какое|какие|что там|где|кто|почему|как|это|он|она|они)|подробнее|расскажи (ещё|еще|подробнее) (о|об|про) (нём|ней|этом|них))",
             RegexOption.IGNORE_CASE
         )
 
         fun needsPhoto(q: String) = visual.containsMatchIn(q)
-        fun isFollowUp(q: String) = followUpRx.containsMatchIn(q.trim()) || q.trim().split(Regex("\\s+")).size <= 3
+        fun isFollowUp(q: String) = followUpRx.containsMatchIn(q.trim())
     }
 
     /** Уменьшает снимок до 768 px по длинной стороне, показывает в приложении и при желании сохраняет. */

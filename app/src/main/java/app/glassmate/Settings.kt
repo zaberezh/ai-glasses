@@ -11,15 +11,15 @@ class Settings(ctx: Context) {
 
     /** "anthropic" или "openai" (любой OpenAI-совместимый API: OpenAI, OpenRouter, Gemini, локальные модели). */
     var provider: String
-        get() = str("provider", "anthropic")
+        get() = str("provider", "openai")
         set(v) = put("provider", v)
 
     var baseUrl: String
-        get() = str("baseUrl", "")
+        get() = str("baseUrl", "ai.starimg.ru")
         set(v) = put("baseUrl", v)
 
     var model: String
-        get() = str("model", DEFAULT_ANTHROPIC_MODEL)
+        get() = str("model", "gpt-6-luna")
         set(v) = put("model", v)
 
     var apiKey: String

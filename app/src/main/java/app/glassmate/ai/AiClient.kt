@@ -56,7 +56,7 @@ class AiClient(private val s: Settings) {
 
         val body = JSONObject()
             .put("model", s.model.ifBlank { Settings.DEFAULT_ANTHROPIC_MODEL })
-            .put("max_tokens", 400)
+            .put("max_tokens", 300)
             .put("system", s.systemPrompt)
             .put("messages", messages)
             .put("stream", true)
@@ -102,7 +102,7 @@ class AiClient(private val s: Settings) {
 
         if (s.model.isBlank()) throw IOException("Укажите название модели в настройках")
         val body = JSONObject().put("model", s.model).put("messages", messages)
-            .put("max_tokens", 400).put("stream", true)
+            .put("max_tokens", 300).put("stream", true)
         // Принимаем host/v1 или полный …/chat/completions; голый адрес дополняем /v1
         var base = normalizeBase(s.baseUrl, "https://api.openai.com/v1").removeSuffix("/chat/completions")
         if (Regex("^https?://[^/]+$").matches(base)) base += "/v1"
