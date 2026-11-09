@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
 import app.glassmate.Core
+import android.os.SystemClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -15,6 +16,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Соединение с очками по Bluetooth SPP (RFCOMM, как у официального приложения).
@@ -22,16 +24,16 @@ import java.util.UUID
  */
 class GlassesLink private constructor(private val socket: BluetoothSocket) {
 
-    private class Pending(val cmd: Int, val deferred: CompletableDeferred<ByteArray>)
 
     private val input = socket.inputStream
     private val output = socket.outputStream
     private val encoder = FrameEncoder()
     private val decoder = FrameDecoder()
     private val writeLock = Any()
-    private val requestMutex = Mutex()
-
-    @Volatile private var pending: Pending? = null
+    /** Ожидающие ответа запросы: команда -> ответ. Разные команды не ждут друг друга. */
+    private val pending = ConcurrentHashMap<Int, CompletableDeferred<ByteArray>>()
+    /** Одинаковые команды идут по одной (ответ различается только кодом команды). */
+    private val cmdLocks = ConcurrentHashMap<Int, Mutex>()
     @Volatile var isOpen = true
         private set
 
@@ -65,9 +67,9 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
 
     private fun dispatch(m: Message) {
         if (m.type == FrameType.RESPONSE) {
-            val p = pending
-            if (p != null && p.cmd == m.cmd) {
-                p.deferred.complete(m.payload)
+            val d = pending[m.cmd]
+            if (d != null) {
+                d.complete(m.payload)
                 return
             }
         }
@@ -86,16 +88,19 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
 
     /** Отправить команду и дождаться ответа. Возвращает payload ответа или null по таймауту. */
     suspend fun request(cmd: Int, payload: ByteArray = ByteArray(0), timeoutMs: Long = 8000): ByteArray? =
-        requestMutex.withLock {
+        cmdLocks.getOrPut(cmd) { Mutex() }.withLock {
             val d = CompletableDeferred<ByteArray>()
-            pending = Pending(cmd, d)
+            pending[cmd] = d
+            val t0 = SystemClock.elapsedRealtime()
             try {
                 withContext(Dispatchers.IO) { send(cmd, payload) }
                 val r = withTimeoutOrNull(timeoutMs) { d.await() }
-                if (r == null) Core.log("Нет ответа на команду 0x%02X".format(cmd))
+                val ms = SystemClock.elapsedRealtime() - t0
+                if (r == null) Core.log("0x%02X: нет ответа за %d мс".format(cmd, ms))
+                else Core.log("0x%02X: ответ за %d мс (%s)".format(cmd, ms, r.toHex(8)))
                 r
             } finally {
-                pending = null
+                pending.remove(cmd, d)
             }
         }
 
@@ -103,7 +108,7 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
         if (!isOpen) return
         isOpen = false
         try { socket.close() } catch (_: IOException) {}
-        pending?.deferred?.cancel()
+        pending.values.forEach { it.cancel() }
         onClosed?.invoke()
     }
 

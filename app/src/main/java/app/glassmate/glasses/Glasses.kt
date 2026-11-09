@@ -18,7 +18,7 @@ class Glasses(private val link: GlassesLink) {
     /** То же, что делает официальное приложение сразу после подключения. */
     suspend fun onConnected() {
         setTime()
-        link.request(Cmd.COPROCESSOR_INFO, timeoutMs = 4000)
+        link.request(Cmd.COPROCESSOR_INFO, timeoutMs = 3000)
         val info = deviceInfo(Info.NAME, Info.FIRMWARE, Info.POWER)
         info[Info.NAME]?.cString()?.takeIf { it.isNotBlank() }?.let {
             Core.deviceName.value = it
@@ -53,13 +53,13 @@ class Glasses(private val link: GlassesLink) {
             .putInt((nowMs / 1000).toInt())
             .putShort(tzMinutes.toShort())
             .array()
-        return link.request(Cmd.SET_TIME, p) != null
+        return link.request(Cmd.SET_TIME, p, timeoutMs = 4000) != null
     }
 
     suspend fun deviceInfo(vararg types: Int): Map<Int, ByteArray> {
         val req = ByteArray(types.size * 2)
         types.forEachIndexed { i, t -> req[i * 2] = t.toByte() }
-        val resp = link.request(Cmd.DEVICE_INFO, req) ?: return emptyMap()
+        val resp = link.request(Cmd.DEVICE_INFO, req, timeoutMs = 4000) ?: return emptyMap()
         return parseTlv(resp)
     }
 
