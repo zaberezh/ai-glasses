@@ -51,7 +51,7 @@ object GeminiLive {
     private const val WS =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
-    private val http = OkHttpClient.Builder()
+    private val http = Net.client.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
         .build()

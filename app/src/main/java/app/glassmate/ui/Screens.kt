@@ -263,7 +263,7 @@ fun aiSettingsScreen(h: Host): View = h.screen("Настройки ИИ-помо
         val hint = label("", 13f, Col.SUB).apply { setPadding(dp(4), dp(10), dp(4), 0) }
         fun drawChips() {
             chips.removeAllViews()
-            listOf("anthropic" to "Claude (Anthropic)", "openai" to "OpenAI-совместимый").forEach { (id, t) ->
+            listOf("anthropic" to "Claude (Anthropic)", "openai" to "OpenAI").forEach { (id, t) ->
                 chips.addView(chip(t, provider == id) { provider = id; drawChips() }, lin(WRAP, WRAP, end = dp(10)))
             }
             hint.text = if (provider == "anthropic") {

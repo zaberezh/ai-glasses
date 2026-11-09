@@ -7,8 +7,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * Клиент ИИ-модели. Два формата:
@@ -27,7 +28,7 @@ class AiClient(private val s: Settings) {
     ): String = withContext(Dispatchers.IO) {
         var lastErr: IOException? = null
         // обрыв соединения (VPN, смена сети) — один раз молча повторяем
-        repeat(2) { attempt ->
+        repeat(3) { attempt ->
             val sent = StringBuilder()
             try {
                 return@withContext if (s.provider == "anthropic") anthropic(history, question, jpeg) { sent.append(it); onDelta(it) }
@@ -39,6 +40,7 @@ class AiClient(private val s: Settings) {
                 // если часть ответа уже показана и озвучена, повтор только запутает
                 if (sent.isNotEmpty()) throw e
                 app.glassmate.Core.log("Связь с моделью оборвалась (${e.message}), повторяю…")
+                kotlinx.coroutines.delay(600L * (attempt + 1))
             }
         }
         throw lastErr ?: IOException("нет ответа от модели")
@@ -51,10 +53,11 @@ class AiClient(private val s: Settings) {
     @Volatile private var effortOk = true
 
     /** Добавляет https:// если адрес вставлен без протокола. */
+    /** Приводит адрес к виду https://host/…: дописывает протокол и исправляет опечатки вроде «httpa://». */
     private fun normalizeBase(raw: String, def: String): String {
         var b = raw.trim().ifBlank { def }.trimEnd('/')
-        if (!b.startsWith("http://") && !b.startsWith("https://")) b = "https://$b"
-        return b
+        b = b.replace(Regex("^[a-zA-Z]{2,6}:/*"), "")   // убираем любой «протокол», даже с опечаткой
+        return "https://$b"
     }
 
     private fun anthropic(history: List<Turn>, question: String, jpeg: ByteArray?, onDelta: (String) -> Unit): String {
@@ -157,28 +160,23 @@ class AiClient(private val s: Settings) {
         url: String, body: JSONObject, headers: Map<String, String>, onDelta: (String) -> Unit,
         streamText: (JSONObject) -> String?, fullText: (JSONObject) -> String,
     ): String {
-        val c = URL(url).openConnection() as HttpURLConnection
-        try {
-            c.requestMethod = "POST"
-            c.connectTimeout = 15000
-            c.readTimeout = 60000
-            c.doOutput = true
-            c.setRequestProperty("content-type", "application/json")
-            c.setRequestProperty("accept", "text/event-stream, application/json")
-            headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
-            c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            val code = c.responseCode
+        val rb = Request.Builder().url(url)
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .header("accept", "text/event-stream, application/json")
+        headers.forEach { (k, v) -> rb.header(k, v) }
+        Net.client.newCall(rb.build()).execute().use { resp ->
+            val code = resp.code
             if (code !in 200..299) {
-                val text = c.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                val text = resp.body?.string().orEmpty()
                 val msg = runCatching {
                     JSONObject(text).optJSONObject("error")?.optString("message")
                 }.getOrNull()?.takeIf { it.isNotBlank() } ?: text.take(300)
                 throw HttpError(code, "HTTP $code: $msg")
             }
-            val isStream = c.contentType?.contains("event-stream") == true
-            val reader = c.inputStream.bufferedReader(Charsets.UTF_8)
+            val respBody = resp.body ?: throw IOException("Пустой ответ сервера")
+            val isStream = resp.header("content-type")?.contains("event-stream") == true
             if (!isStream) {
-                val text = reader.use { it.readText() }
+                val text = respBody.string()
                 // Некоторые посредники шлют поток без правильного content-type
                 if (text.trimStart().startsWith("data:") || text.trimStart().startsWith("event:")) {
                     return parseSse(text.lineSequence(), onDelta, streamText)
@@ -187,9 +185,7 @@ class AiClient(private val s: Settings) {
                 onDelta(full)
                 return full
             }
-            return reader.use { parseSse(it.lineSequence(), onDelta, streamText) }
-        } finally {
-            c.disconnect()
+            return respBody.charStream().buffered().use { parseSse(it.lineSequence(), onDelta, streamText) }
         }
     }
 
