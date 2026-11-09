@@ -18,7 +18,10 @@ class Glasses(private val link: GlassesLink) {
     /** То же, что делает официальное приложение сразу после подключения. */
     suspend fun onConnected() {
         setTime()
+        // Похоже, в ответе сопроцессора приходит маска способностей (GLASS_ABILITY_*).
+        // Раньше ответ выбрасывался; теперь разбираем его и пишем в журнал.
         link.request(Cmd.COPROCESSOR_INFO, timeoutMs = 3000)
+            ?.let { Core.onAbilities(it, "ответ 0xE0") }
         val info = deviceInfo(Info.NAME, Info.FIRMWARE, Info.POWER)
         info[Info.NAME]?.cString()?.takeIf { it.isNotBlank() }?.let {
             Core.deviceName.value = it

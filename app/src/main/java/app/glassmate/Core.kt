@@ -6,10 +6,12 @@ import android.bluetooth.BluetoothManager
 import android.graphics.Bitmap
 import android.util.Log
 import app.glassmate.glasses.Cmd
+import app.glassmate.glasses.GlassAbility
 import app.glassmate.glasses.Glasses
 import app.glassmate.glasses.GlassesLink
 import app.glassmate.glasses.Keys
 import app.glassmate.glasses.cString
+import app.glassmate.glasses.parseTlv
 import app.glassmate.glasses.toHex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +49,10 @@ object Core {
     val battery = MutableStateFlow<Pair<Int, Boolean>?>(null)
     /** Что сейчас пишут очки: "video", "audio" или null. */
     val recording = MutableStateFlow<String?>(null)
+    /** Маска способностей очков (GLASS_ABILITY_*), null — ещё не приходила. */
+    val abilities = MutableStateFlow<Int?>(null)
+    /** Очки просят скрыть запись: бит GLASS_ABILITY_HIDE_RECORD (512). */
+    val hideRecord = MutableStateFlow(false)
 
     /** Сообщения чата с ИИ. */
     data class ChatItem(val fromUser: Boolean, val text: String, val image: Bitmap? = null)
@@ -104,6 +110,8 @@ object Core {
                         connected.value = false
                         battery.value = null
                         recording.value = null
+                        abilities.value = null
+                        hideRecord.value = false
                         status.value = "Отключено"
                         log("Соединение с очками закрыто")
                     }
@@ -149,6 +157,8 @@ object Core {
         connected.value = false
         battery.value = null
         recording.value = null
+        abilities.value = null
+        hideRecord.value = false
     }
 
     /** Разбор уведомлений, которые очки шлют сами. */
@@ -169,6 +179,23 @@ object Core {
                         }
                     }
                     Cmd.WIFI_CONFIG_STATE -> log("Wi-Fi очков: состояние ${m.payload.toHex()}")
+                    // Способности очков: битовая маска GLASS_ABILITY_* (см. GlassAbility).
+                    Cmd.COPROCESSOR_INFO -> onAbilities(m.payload, "уведомление 0xE0")
+                    Cmd.GLASS_CONFIG -> {
+                        val tlv = parseTlv(m.payload)
+                        if (tlv.isEmpty()) log("Настройки очков: ${m.payload.toHex()}")
+                        else for ((k, v) in tlv) {
+                            var line = "Настройки очков: ключ 0x%02X = %s".format(k, v.toHex())
+                            // Каким ключом приходит маска способностей, на MT5 Ultra не
+                            // подтверждено, поэтому флаг отсюда не выставляем: для
+                            // двухбайтовых значений только показываем, как они читались
+                            // бы как GLASS_ABILITY_*. Увидите нужный ключ — скажите.
+                            if (v.size == 2) GlassAbility.parse(v)?.let {
+                                line += " — как способности: ${GlassAbility.describe(it)}"
+                            }
+                            log(line)
+                        }
+                    }
                     Cmd.WORK_STATE -> log("Режим очков: ${m.payload.firstOrNull()?.toInt()?.and(0xFF)}")
                     Cmd.AI_CHAT_STATE -> {
                         log("Очки: сигнал ИИ-кнопки (${m.payload.toHex()})")
@@ -180,6 +207,25 @@ object Core {
                 }
             }
         }
+    }
+
+    /**
+     * Разбор слова способностей очков (GLASS_ABILITY_*).
+     *
+     * Какой именно командой оно приходит на MT5 Ultra, не подтверждено: в AIBuds
+     * его отдаёт сопроцессор очков (0xE0), поэтому разбираем и ответ на запрос, и
+     * уведомление, а сырые байты пишем в журнал — по нему можно сверить маску.
+     */
+    fun onAbilities(payload: ByteArray, from: String) {
+        val mask = GlassAbility.parse(payload)
+        if (mask == null) {
+            log("Способности очков ($from): пустой ответ")
+            return
+        }
+        abilities.value = mask
+        hideRecord.value = (mask and GlassAbility.HIDE_RECORD) != 0
+        log("Способности очков ($from): ${GlassAbility.describe(mask)}")
+        if (hideRecord.value) log("Очки просят скрыть запись (бит 512)")
     }
 
     fun describeKeys(map: Map<Int, Int>): String =

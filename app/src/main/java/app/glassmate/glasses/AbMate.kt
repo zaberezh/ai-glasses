@@ -87,6 +87,51 @@ object Keys {
     )
 }
 
+/**
+ * Битовая маска «способностей» очков (константы GLASS_ABILITY_* из AIBuds).
+ *
+ * Очки присылают одно слово, где каждый бит включает или выключает функцию в
+ * приложении. Это маска, а не номер: проверяется как
+ * `(слово and GlassAbility.HIDE_RECORD) != 0`.
+ *
+ * Расшифрован пока один бит: HIDE_RECORD = 512 = 0x0200 = `1 shl 9`, то есть
+ * девятый бит слова. Остальные биты describe() печатает номерами — подключите
+ * очки и посмотрите в журнале строку «Способности очков», там будет видно всю
+ * маску вашей модели.
+ */
+object GlassAbility {
+    /** 512 = 0x0200 = бит 9: прятать запись (функцию и индикатор) в приложении. */
+    const val HIDE_RECORD = 512
+
+    /** Имена расшифрованных битов. */
+    private val NAMES = mapOf(
+        HIDE_RECORD to "скрывать запись (GLASS_ABILITY_HIDE_RECORD, 512)",
+    )
+
+    /** Слово способностей из payload: 1–4 байта, little-endian. null, если байтов нет. */
+    fun parse(data: ByteArray): Int? {
+        if (data.isEmpty()) return null
+        var v = 0
+        for (i in 0 until minOf(data.size, 4)) v = v or ((data[i].toInt() and 0xFF) shl (8 * i))
+        return v
+    }
+
+    /** Есть ли бит в маске. */
+    fun has(mask: Int?, bit: Int): Boolean = mask != null && (mask and bit) != 0
+
+    /** Разбор маски: известные биты по именам, неизвестные — номерами. */
+    fun describe(mask: Int): String {
+        if (mask == 0) return "нет ни одного бита (0)"
+        val parts = ArrayList<String>()
+        for (bit in 0 until 32) {
+            val v = 1 shl bit
+            if ((mask and v) == 0) continue
+            parts += NAMES[v] ?: "бит $bit (0x%04X)".format(v)
+        }
+        return parts.joinToString(", ") + " [маска 0x%04X]".format(mask)
+    }
+}
+
 class Message(val cmd: Int, val type: Int, val payload: ByteArray) {
     override fun toString() = "cmd=0x%02X type=%d payload=%s".format(cmd, type, payload.toHex())
 }
