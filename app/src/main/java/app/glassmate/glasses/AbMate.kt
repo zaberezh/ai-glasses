@@ -58,6 +58,8 @@ object Info {
     const val NAME = 0x03
     const val KEY_SETTINGS = 0x05
     const val VOLUME = 0x06
+    /** INFO_DEVICE_ABILITY / INFO_DEVICE_CAPABILITIES: маска способностей, сырые байты. */
+    const val DEVICE_ABILITY = 0xFE
     const val MAX_PACKET_SIZE = 0xFF
 }
 
@@ -88,16 +90,25 @@ object Keys {
 }
 
 /**
- * Битовая маска «способностей» очков (константы GLASS_ABILITY_* из AIBuds).
+ * Битовая маска «способностей» очков.
  *
- * Очки присылают одно слово, где каждый бит включает или выключает функцию в
- * приложении. Это маска, а не номер: проверяется как
- * `(слово and GlassAbility.HIDE_RECORD) != 0`.
+ * Сверено с TopStep WearKit SDK 3.0.2.8 (sdk-abmate-adapter.aar):
+ * `com.topstep.wearkit.abmate.internal.ability.speech.SpeechAiProtocolKt`,
+ * `GLASS_ABILITY_HIDE_RECORD = 512`.
  *
- * Расшифрован пока один бит: HIDE_RECORD = 512 = 0x0200 = `1 shl 9`, то есть
- * девятый бит слова. Остальные биты describe() печатает номерами — подключите
- * очки и посмотрите в журнале строку «Способности очков», там будет видно всю
- * маску вашей модели.
+ * Откуда берётся слово: `DEVICE_INFO` (0x27), ключ TLV `INFO_DEVICE_ABILITY`
+ * = 0xFE, сырые байты (в SDK — `ByteArrayPayloadHandler`, поле `deviceAbility`).
+ * Байты складываются little-endian: `mask or ((b[i] and 0xFF) shl (8 * i))`.
+ *
+ * Как проверяет SDK: `FlagUtil.isFlagEnabled(mask, 512)`, то есть
+ * `(mask and 512) > 0`, а `isAbMateRecordSupported()` возвращает обратное —
+ * и `true`, если слово ещё не приходило. То есть **бит выставлен = запись
+ * не поддерживается и её надо скрыть**, по умолчанию запись доступна.
+ *
+ * HIDE_RECORD = 512 = 0x0200 = `1 shl 9` — девятый бит. Это единственная
+ * константа GLASS_ABILITY_* во всём SDK (проверены все 22 aar), и больше
+ * ни один бит этого слова нигде в SDK не читается. Поэтому describe()
+ * печатает остальные биты номерами — по журналу будет видна вся маска.
  */
 object GlassAbility {
     /** 512 = 0x0200 = бит 9: прятать запись (функцию и индикатор) в приложении. */
@@ -116,8 +127,11 @@ object GlassAbility {
         return v
     }
 
-    /** Есть ли бит в маске. */
-    fun has(mask: Int?, bit: Int): Boolean = mask != null && (mask and bit) != 0
+    /** Есть ли бит в маске. Как FlagUtil.isFlagEnabled в SDK: строго больше нуля. */
+    fun has(mask: Int?, bit: Int): Boolean = mask != null && (mask and bit) > 0
+
+    /** Поддерживается ли запись. Повторяет isAbMateRecordSupported: без данных — да. */
+    fun isRecordSupported(mask: Int?): Boolean = !has(mask, HIDE_RECORD)
 
     /** Разбор маски: известные биты по именам, неизвестные — номерами. */
     fun describe(mask: Int): String {

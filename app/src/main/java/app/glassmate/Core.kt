@@ -9,6 +9,7 @@ import app.glassmate.glasses.Cmd
 import app.glassmate.glasses.GlassAbility
 import app.glassmate.glasses.Glasses
 import app.glassmate.glasses.GlassesLink
+import app.glassmate.glasses.Info
 import app.glassmate.glasses.Keys
 import app.glassmate.glasses.cString
 import app.glassmate.glasses.parseTlv
@@ -179,22 +180,20 @@ object Core {
                         }
                     }
                     Cmd.WIFI_CONFIG_STATE -> log("Wi-Fi очков: состояние ${m.payload.toHex()}")
-                    // Способности очков: битовая маска GLASS_ABILITY_* (см. GlassAbility).
-                    Cmd.COPROCESSOR_INFO -> onAbilities(m.payload, "уведомление 0xE0")
+                    // Очки сами присылают информацию тем же TLV, что и в ответе на 0x27.
+                    // Ключ 0xFE (INFO_DEVICE_ABILITY) — маска способностей.
+                    Cmd.DEVICE_INFO -> {
+                        val tlv = parseTlv(m.payload)
+                        if (tlv.isEmpty()) log("Очки сообщили информацию: ${m.payload.toHex()}")
+                        for ((k, v) in tlv) {
+                            if (k == Info.DEVICE_ABILITY) onAbilities(v, "уведомление 0x27, ключ 0xFE")
+                            else log("Очки сообщили информацию: тип 0x%02X = %s".format(k, v.toHex()))
+                        }
+                    }
                     Cmd.GLASS_CONFIG -> {
                         val tlv = parseTlv(m.payload)
                         if (tlv.isEmpty()) log("Настройки очков: ${m.payload.toHex()}")
-                        else for ((k, v) in tlv) {
-                            var line = "Настройки очков: ключ 0x%02X = %s".format(k, v.toHex())
-                            // Каким ключом приходит маска способностей, на MT5 Ultra не
-                            // подтверждено, поэтому флаг отсюда не выставляем: для
-                            // двухбайтовых значений только показываем, как они читались
-                            // бы как GLASS_ABILITY_*. Увидите нужный ключ — скажите.
-                            if (v.size == 2) GlassAbility.parse(v)?.let {
-                                line += " — как способности: ${GlassAbility.describe(it)}"
-                            }
-                            log(line)
-                        }
+                        else for ((k, v) in tlv) log("Настройки очков: ключ 0x%02X = %s".format(k, v.toHex()))
                     }
                     Cmd.WORK_STATE -> log("Режим очков: ${m.payload.firstOrNull()?.toInt()?.and(0xFF)}")
                     Cmd.AI_CHAT_STATE -> {
@@ -210,11 +209,11 @@ object Core {
     }
 
     /**
-     * Разбор слова способностей очков (GLASS_ABILITY_*).
+     * Разбор слова способностей очков. Подробности — в GlassAbility.
      *
-     * Какой именно командой оно приходит на MT5 Ultra, не подтверждено: в AIBuds
-     * его отдаёт сопроцессор очков (0xE0), поэтому разбираем и ответ на запрос, и
-     * уведомление, а сырые байты пишем в журнал — по нему можно сверить маску.
+     * Слово приходит ключом 0xFE (INFO_DEVICE_ABILITY) внутри DEVICE_INFO (0x27):
+     * и в ответе на запрос при подключении, и уведомлением, если очки сообщают
+     * его сами. Сырые байты пишем в журнал — по нему видна вся маска.
      */
     fun onAbilities(payload: ByteArray, from: String) {
         val mask = GlassAbility.parse(payload)
@@ -225,7 +224,7 @@ object Core {
         abilities.value = mask
         hideRecord.value = (mask and GlassAbility.HIDE_RECORD) != 0
         log("Способности очков ($from): ${GlassAbility.describe(mask)}")
-        if (hideRecord.value) log("Очки просят скрыть запись (бит 512)")
+        if (hideRecord.value) log("Очки не поддерживают запись, её надо скрыть (бит 512)")
     }
 
     fun describeKeys(map: Map<Int, Int>): String =
