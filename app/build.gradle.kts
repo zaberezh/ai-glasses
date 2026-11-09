@@ -11,8 +11,8 @@ android {
         applicationId = "app.glassmate"
         minSdk = 29
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.6"
+        versionCode = 7
+        versionName = "0.7"
     }
 
     // Постоянный ключ подписи: без него каждая сборка на GitHub получает новый ключ,
@@ -47,4 +47,5 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

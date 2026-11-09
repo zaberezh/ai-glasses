@@ -72,6 +72,34 @@ class Settings(ctx: Context) {
         get() = p.getInt("audioLimit", 30)
         set(v) = p.edit().putInt("audioLimit", v).apply()
 
+    /** Снимок только когда вопрос про то, что перед глазами. */
+    var autoPhoto: Boolean
+        get() = p.getBoolean("autoPhoto", true)
+        set(v) = putB("autoPhoto", v)
+
+    var speechRate: Float
+        get() = p.getFloat("speechRate", 1.15f)
+        set(v) = p.edit().putFloat("speechRate", v).apply()
+
+    // --- Gemini Live ---
+    var geminiKey: String
+        get() = str("geminiKey", "")
+        set(v) = put("geminiKey", v)
+
+    /** Пусто = выбрать автоматически из списка моделей с поддержкой Live. */
+    var geminiLiveModel: String
+        get() = str("geminiLiveModel", "")
+        set(v) = put("geminiLiveModel", v)
+
+    var geminiVoice: String
+        get() = str("geminiVoice", "Puck")
+        set(v) = put("geminiVoice", v)
+
+    /** Интервал кадров в Live-режиме, мс. */
+    var liveFrameMs: Int
+        get() = p.getInt("liveFrameMs", 1500)
+        set(v) = p.edit().putInt("liveFrameMs", v).apply()
+
     /** Писать в журнал все байты обмена с очками (для отладки). */
     var verboseLog: Boolean
         get() = p.getBoolean("verboseLog", true)

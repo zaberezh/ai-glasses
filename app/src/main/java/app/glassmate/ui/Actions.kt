@@ -11,6 +11,7 @@ import app.glassmate.Core
 import app.glassmate.GlassesService
 import app.glassmate.WifiImporter
 import app.glassmate.glasses.Glasses
+import app.glassmate.glasses.toHex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -139,6 +140,35 @@ object Actions {
         Core.addChat(Core.ChatItem(true, "Снимок с камеры очков", Core.lastImage.value))
         h.ui.launch { h.selectTab(1) }
         null
+    }
+
+    /** Диагностика: что очки шлют в режиме трансляции (0xE8 без параметров → уведомления 0xBC). */
+    fun testBtStream(h: Host) {
+        val g = requireGlasses(h) ?: return
+        val link = Core.link ?: return
+        h.toast("Тест видеопотока: 6 секунд…")
+        Core.scope.launch {
+            var count = 0
+            var bytes = 0L
+            val firsts = ArrayList<String>()
+            val job = launch {
+                link.notifications.collect { m ->
+                    if (m.cmd == app.glassmate.glasses.Cmd.LIVE_STREAM || m.cmd == app.glassmate.glasses.Cmd.START_STREAMING) {
+                        count++
+                        bytes += m.payload.size
+                        if (firsts.size < 6) firsts += "0x%02X[%d] %s".format(m.cmd, m.payload.size, m.payload.toHex(20))
+                    }
+                }
+            }
+            val r = link.request(app.glassmate.glasses.Cmd.START_STREAMING, timeoutMs = 15000)
+            Core.log("Видеопоток: ответ на старт ${r?.toHex() ?: "нет"}")
+            kotlinx.coroutines.delay(6000)
+            job.cancel()
+            runCatching { g.stopCamera() }
+            Core.log("Видеопоток: пакетов $count, байт $bytes (≈${bytes / 6 / 1024} КБ/с)")
+            firsts.forEach { Core.log("Видеопоток: $it") }
+            h.ui.launch { h.toast("Тест завершён: пакетов $count, ${bytes / 1024} КБ. Подробности в журнале") }
+        }
     }
 
     fun importMedia(h: Host, onDone: (() -> Unit)? = null) {

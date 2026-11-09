@@ -59,6 +59,14 @@ object Core {
 
     fun addChat(item: ChatItem) = chat.update { (it + item).takeLast(100) }
 
+    /** Обновить текст последнего сообщения (ответ ИИ приходит по кусочкам). */
+    fun updateLastChat(text: String) = chat.update { list ->
+        if (list.isEmpty()) list else list.dropLast(1) + list.last().copy(text = text)
+    }
+
+    /** Последний кадр «живого взгляда»: время получения и JPEG. */
+    val liveFrame = MutableStateFlow<Pair<Long, ByteArray>?>(null)
+
     @Volatile var link: GlassesLink? = null
         private set
     @Volatile var deviceAddress: String? = null

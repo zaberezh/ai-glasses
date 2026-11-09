@@ -21,16 +21,27 @@ import kotlinx.coroutines.launch
 fun aiTab(h: Host): View = with(h.ctx) {
     val root = vbox()
 
+    // --- кнопка Live ---
+    val liveChip = label("● Live", 14f, bold = true).apply {
+        setPadding(dp(14), dp(7), dp(14), dp(7))
+        setOnClickListener { app.glassmate.ai.GeminiLive.toggle() }
+    }
+
     // --- шапка ---
     root.addView(FrameLayout(this).apply {
         setPadding(dp(16), dp(14), dp(16), dp(14))
-        addView(label("Разговор с ИИ", 20f, bold = true).apply {
+        addView(label("Разговор с ИИ", 19f, bold = true).apply {
             layoutParams = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER)
         })
-        addView(label("Новый", 15f, Col.SUB).apply {
-            layoutParams = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.START or Gravity.CENTER_VERTICAL)
-            setPadding(dp(4), dp(8), dp(8), dp(8))
-            setOnClickListener { Core.assistant.clearHistory() }
+        addView(liveChip, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.START or Gravity.CENTER_VERTICAL))
+        addView(FrameLayout(context).apply {
+            val s = dp(44)
+            layoutParams = FrameLayout.LayoutParams(s, s, Gravity.END or Gravity.CENTER_VERTICAL).apply { marginEnd = dp(46) }
+            background = clickable(rounded(Col.BG, s / 2f), s / 2f)
+            addView(icon(R.drawable.ic_new_chat, Col.TEXT, 26).apply {
+                layoutParams = FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER)
+            })
+            setOnClickListener { Core.assistant.clearHistory(); h.toast("Новый диалог") }
         })
         addView(FrameLayout(context).apply {
             val s = dp(44)
@@ -50,7 +61,19 @@ fun aiTab(h: Host): View = with(h.ctx) {
         isVerticalScrollBarEnabled = false
         addView(list)
     }
-    root.addView(scroll, lin(MATCH, 0, 1f))
+    // превью кадра с очков в Live-режиме
+    val preview = android.widget.ImageView(this).apply {
+        scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+        background = rounded(Col.CARD, dp(14).toFloat())
+        clipToOutline = true
+        visibility = View.GONE
+    }
+    root.addView(FrameLayout(this).apply {
+        addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
+        addView(preview, FrameLayout.LayoutParams(dp(120), dp(90), Gravity.END or Gravity.TOP).apply {
+            setMargins(0, dp(6), dp(12), 0)
+        })
+    }, lin(MATCH, 0, 1f))
 
     val state = label("", 14f, Col.SUB).apply {
         gravity = Gravity.CENTER
@@ -178,11 +201,24 @@ fun aiTab(h: Host): View = with(h.ctx) {
         }
     }
     h.ui.launch {
-        Core.assistantState.collect { st ->
-            state.text = st
-            state.visibility = if (st.isEmpty()) View.GONE else View.VISIBLE
+        kotlinx.coroutines.flow.combine(
+            Core.assistantState, app.glassmate.ai.GeminiLive.active, app.glassmate.ai.GeminiLive.state
+        ) { a, live, ls -> Triple(a, live, ls) }.collect { (st, live, ls) ->
+            val shown = if (live) "Live: $ls" else st
+            state.text = shown
+            state.visibility = if (shown.isEmpty()) View.GONE else View.VISIBLE
             val rr = dp(25).toFloat()
             mainButton.background = clickable(rounded(if (st == "Слушаю…") Col.RED else Col.ACCENT, rr), rr)
+            val cr = dp(18).toFloat()
+            liveChip.background = clickable(rounded(if (live) Col.RED else Col.CARD2, cr), cr)
+            liveChip.text = if (live) "■ Стоп" else "● Live"
+            preview.visibility = if (live && Core.lastImage.value != null) View.VISIBLE else View.GONE
+        }
+    }
+    h.ui.launch {
+        Core.lastImage.collect { bmp ->
+            if (bmp != null) preview.setImageBitmap(bmp)
+            if (app.glassmate.ai.GeminiLive.active.value && bmp != null) preview.visibility = View.VISIBLE
         }
     }
 

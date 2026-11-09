@@ -183,6 +183,11 @@ fun settingsScreen(h: Host): View = h.screen("Настройки") { c ->
         gap(c)
         c.addView(arrowRow(R.drawable.ic_bluetooth, "Подключение очков") { Actions.connectDialog(h) }.first)
         gap(c)
+        c.addView(arrowRow(R.drawable.ic_videocam, "Проверить видеопоток по Bluetooth",
+            "Тест: включает трансляцию камеры на 6 секунд и пишет в журнал, что пришло") {
+            Actions.testBtStream(h)
+        }.first)
+        gap(c)
         c.addView(switchRow(R.drawable.ic_list, "Подробный журнал", "Все байты обмена с очками — для отладки", s.verboseLog) {
             s.verboseLog = it
         })
@@ -282,8 +287,33 @@ fun aiSettingsScreen(h: Host): View = h.screen("Настройки ИИ-помо
         listOf(urlBox, modelBox, keyBox, promptBox, lookBox).forEach { c.addView(it) }
         gap(c)
         var attach = s.attachPhoto
-        c.addView(switchRow(R.drawable.ic_camera, "Прикладывать снимок", "ИИ видит кадр с камеры очков", attach) { attach = it })
+        var auto = s.autoPhoto
+        c.addView(switchRow(R.drawable.ic_camera, "Камера очков для ИИ", "ИИ может видеть кадр с камеры очков", attach) { attach = it })
+        gap(c)
+        c.addView(switchRow(R.drawable.ic_eye, "Снимок только по смыслу",
+            "Фотографировать, только если вопрос про то, что перед глазами («что это», «прочитай»…). Так ответ быстрее.",
+            auto) { auto = it })
+
+        c.addView(sectionTitle("Live-режим (Gemini)"))
+        c.addView(label(
+            "Живой разговор голосом: ИИ слышит вас через очки, видит кадр с камеры каждые 1–2 секунды, " +
+                "его можно перебивать. Нужен ключ Gemini API: aistudio.google.com → Get API key (бесплатно). " +
+                "Запуск — кнопка «● Live» во вкладке AI.",
+            13f, Col.SUB
+        ).apply { setPadding(dp(4), 0, dp(4), 0) })
+        val (gkBox, gk) = field("Ключ Gemini API", s.geminiKey, "AIza…", password = true)
+        val (gmBox, gm) = field("Модель Live (пусто — выбрать автоматически)", s.geminiLiveModel, "автоматически")
+        val (gvBox, gv) = field("Голос (Puck, Charon, Kore, Fenrir, Aoede, Leda, Orus, Zephyr)", s.geminiVoice)
+        val (gfBox, gf) = field("Кадр с камеры каждые, мс", s.liveFrameMs.toString())
+        gf.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        listOf(gkBox, gmBox, gvBox, gfBox).forEach { c.addView(it) }
+
         c.addView(primaryButton("Сохранить") {
+            s.autoPhoto = auto
+            s.geminiKey = gk.text.toString().trim()
+            s.geminiLiveModel = gm.text.toString().trim()
+            s.geminiVoice = gv.text.toString().trim().ifEmpty { "Puck" }
+            s.liveFrameMs = gf.text.toString().toIntOrNull()?.coerceIn(500, 10000) ?: 1500
             s.provider = provider
             s.baseUrl = url.text.toString().trim()
             s.model = model.text.toString().trim()
