@@ -77,6 +77,16 @@ class Settings(ctx: Context) {
         get() = p.getBoolean("autoPhoto", true)
         set(v) = putB("autoPhoto", v)
 
+    /** Потоковый ответ: быстрее с прямым API, но через некоторые посредники медленнее и рвётся. */
+    var streamAnswer: Boolean
+        get() = p.getBoolean("streamAnswer", false)
+        set(v) = putB("streamAnswer", v)
+
+    /** reasoning_effort = low для моделей OpenAI-формата. */
+    var fastMode: Boolean
+        get() = p.getBoolean("fastMode", true)
+        set(v) = putB("fastMode", v)
+
     var speechRate: Float
         get() = p.getFloat("speechRate", 1.15f)
         set(v) = p.edit().putFloat("speechRate", v).apply()

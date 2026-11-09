@@ -25,9 +25,30 @@ class AiClient(private val s: Settings) {
         history: List<Turn>, question: String, jpeg: ByteArray?,
         onDelta: (String) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
-        if (s.provider == "anthropic") anthropic(history, question, jpeg, onDelta)
-        else openAi(history, question, jpeg, onDelta)
+        var lastErr: IOException? = null
+        // обрыв соединения (VPN, смена сети) — один раз молча повторяем
+        repeat(2) { attempt ->
+            val sent = StringBuilder()
+            try {
+                return@withContext if (s.provider == "anthropic") anthropic(history, question, jpeg) { sent.append(it); onDelta(it) }
+                else openAi(history, question, jpeg) { sent.append(it); onDelta(it) }
+            } catch (e: HttpError) {
+                throw e
+            } catch (e: IOException) {
+                lastErr = e
+                // если часть ответа уже показана и озвучена, повтор только запутает
+                if (sent.isNotEmpty()) throw e
+                app.glassmate.Core.log("Связь с моделью оборвалась (${e.message}), повторяю…")
+            }
+        }
+        throw lastErr ?: IOException("нет ответа от модели")
     }
+
+    /** Ошибка от сервера (4xx/5xx) — повторять бессмысленно. */
+    class HttpError(val code: Int, msg: String) : IOException(msg)
+
+    /** Поддерживает ли модель параметр reasoning_effort — выясняется на первом запросе. */
+    @Volatile private var effortOk = true
 
     /** Добавляет https:// если адрес вставлен без протокола. */
     private fun normalizeBase(raw: String, def: String): String {
@@ -59,7 +80,7 @@ class AiClient(private val s: Settings) {
             .put("max_tokens", 300)
             .put("system", s.systemPrompt)
             .put("messages", messages)
-            .put("stream", true)
+            .put("stream", s.streamAnswer)
 
         // Принимаем адрес в любом виде: host, https://host, https://host/v1 или полный …/v1/messages
         val base = normalizeBase(s.baseUrl, "https://api.anthropic.com")
@@ -102,12 +123,15 @@ class AiClient(private val s: Settings) {
 
         if (s.model.isBlank()) throw IOException("Укажите название модели в настройках")
         val body = JSONObject().put("model", s.model).put("messages", messages)
-            .put("max_tokens", 300).put("stream", true)
+            .put("max_tokens", 300).put("stream", s.streamAnswer)
+        // быстрый режим: модель меньше «размышляет» перед коротким голосовым ответом
+        if (effortOk && s.fastMode) body.put("reasoning_effort", "low")
         // Принимаем host/v1 или полный …/chat/completions; голый адрес дополняем /v1
         var base = normalizeBase(s.baseUrl, "https://api.openai.com/v1").removeSuffix("/chat/completions")
         if (Regex("^https?://[^/]+$").matches(base)) base += "/v1"
 
-        return post("$base/chat/completions", body, mapOf("Authorization" to "Bearer ${s.apiKey}"), onDelta,
+        val headers = mapOf("Authorization" to "Bearer ${s.apiKey}")
+        val call = { b: JSONObject -> post("$base/chat/completions", b, headers, onDelta,
             streamText = { ev ->
                 ev.optJSONObject("error")?.let { throw IOException(it.optString("message", "ошибка модели")) }
                 ev.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")
@@ -116,7 +140,17 @@ class AiClient(private val s: Settings) {
             fullText = { json ->
                 json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                     ?: throw IOException("Пустой ответ модели")
-            })
+            }) }
+        return try {
+            call(body)
+        } catch (e: HttpError) {
+            // модель не знает reasoning_effort — больше его не отправляем
+            if (e.code == 400 && body.has("reasoning_effort") && (e.message ?: "").contains("reasoning", true)) {
+                effortOk = false
+                body.remove("reasoning_effort")
+                call(body)
+            } else throw e
+        }
     }
 
     private fun post(
@@ -139,7 +173,7 @@ class AiClient(private val s: Settings) {
                 val msg = runCatching {
                     JSONObject(text).optJSONObject("error")?.optString("message")
                 }.getOrNull()?.takeIf { it.isNotBlank() } ?: text.take(300)
-                throw IOException("HTTP $code: $msg")
+                throw HttpError(code, "HTTP $code: $msg")
             }
             val isStream = c.contentType?.contains("event-stream") == true
             val reader = c.inputStream.bufferedReader(Charsets.UTF_8)
@@ -164,13 +198,17 @@ class AiClient(private val s: Settings) {
         for (line in lines) {
             if (!line.startsWith("data:")) continue
             val data = line.removePrefix("data:").trim()
-            if (data.isEmpty() || data == "[DONE]") continue
+            if (data == "[DONE]") break
+            if (data.isEmpty()) continue
             val ev = runCatching { JSONObject(data) }.getOrNull() ?: continue
             val piece = streamText(ev)
             if (!piece.isNullOrEmpty()) {
                 sb.append(piece)
                 onDelta(piece)
             }
+            // ответ закончен — не ждём, пока сервер сам закроет соединение
+            val finish = ev.optJSONArray("choices")?.optJSONObject(0)?.let { if (it.isNull("finish_reason")) null else it.optString("finish_reason") }
+            if (!finish.isNullOrEmpty() || ev.optString("type") == "message_stop") break
         }
         return sb.toString().trim()
     }

@@ -294,6 +294,14 @@ fun aiSettingsScreen(h: Host): View = h.screen("Настройки ИИ-помо
             "Фотографировать, только если вопрос про то, что перед глазами («что это», «прочитай»…). Так ответ быстрее.",
             auto) { auto = it })
 
+        gap(c)
+        var fast = s.fastMode
+        var stream = s.streamAnswer
+        c.addView(switchRow(R.drawable.ic_sparkles, "Быстрый режим", "Модель меньше «думает» (reasoning effort: low)", fast) { fast = it })
+        gap(c)
+        c.addView(switchRow(R.drawable.ic_send, "Потоковый ответ",
+            "Озвучка начинается раньше, но через некоторые сервисы ответ медленнее и обрывается", stream) { stream = it })
+
         c.addView(sectionTitle("Live-режим (Gemini)"))
         c.addView(label(
             "Живой разговор голосом: ИИ слышит вас через очки, видит кадр с камеры каждые 1–2 секунды, " +
@@ -309,6 +317,8 @@ fun aiSettingsScreen(h: Host): View = h.screen("Настройки ИИ-помо
         listOf(gkBox, gmBox, gvBox, gfBox).forEach { c.addView(it) }
 
         c.addView(primaryButton("Сохранить") {
+            s.fastMode = fast
+            s.streamAnswer = stream
             s.autoPhoto = auto
             s.geminiKey = gk.text.toString().trim()
             s.geminiLiveModel = gm.text.toString().trim()
