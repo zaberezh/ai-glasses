@@ -29,6 +29,9 @@ import kotlin.coroutines.resumeWithException
  */
 class WifiImporter(private val ctx: Context) {
 
+    /** Геолокация выключена — без неё Android не ищет сети Wi-Fi и не подключится к очкам. */
+    class LocationOffException : IOException("включите геолокацию — без неё телефон не найдёт Wi-Fi очков")
+
     private val cm = ctx.getSystemService(ConnectivityManager::class.java)!!
 
     suspend fun import(): Int {
@@ -39,6 +42,15 @@ class WifiImporter(private val ctx: Context) {
 
         val wifi = ctx.getSystemService(android.net.wifi.WifiManager::class.java)
         if (wifi != null && !wifi.isWifiEnabled) throw IOException("включите Wi-Fi на телефоне и повторите")
+        // Поэтому официальное приложение и просит геолокацию: поиск сетей Wi-Fi в Android
+        // работает только при включённом определении местоположения. Слежка тут ни при чём.
+        val loc = ctx.getSystemService(android.location.LocationManager::class.java)
+        if (loc != null && !loc.isLocationEnabled) throw LocationOffException()
+        if (ctx.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) Core.log("Импорт: нет разрешения на геолокацию — на части телефонов без него Wi-Fi очков не найдётся")
+        val vpn = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        if (vpn) Core.log("Импорт: включён VPN. Если подключение к очкам не пойдёт — выключите его на время импорта")
 
         Core.wifiFileAddress.value = null
         Core.log("Включаю Wi-Fi на очках ($ssid)…")
@@ -47,7 +59,12 @@ class WifiImporter(private val ctx: Context) {
         Core.log("Подключаюсь к Wi-Fi очков — подтвердите запрос системы, если он появится")
         Core.importProgress.value = "Импорт: подключаюсь к Wi-Fi очков…"
         val (network, callback) = try {
-            connectWifi(ssid, password)
+            // Сначала точное имя сети; если очки назвали её иначе — любую сеть «AiGlass…»
+            runCatching { connectWifi(ssid, password, exact = true, timeoutMs = 25_000) }.getOrElse {
+                Core.log("Сеть $ssid не найдена (${it.message}) — ищу любую сеть AiGlass…")
+                Core.importProgress.value = "Импорт: ищу Wi-Fi очков… выберите AiGlass в окне системы"
+                connectWifi(ssid, password, exact = false, timeoutMs = 45_000)
+            }
         } catch (e: Exception) {
             runCatching { glasses.stopCamera() } // не оставляем Wi-Fi очков включённым впустую
             throw e
@@ -74,9 +91,15 @@ class WifiImporter(private val ctx: Context) {
                 Core.importProgress.value = title
                 try {
                     val t0 = System.currentTimeMillis()
+                    var expected = -1L
                     val size = download(network, URL(URL(base), name), name.substringAfterLast('/')) { got, total ->
+                        expected = total
                         Core.importProgress.value =
                             if (total > 0) "$title · ${got * 100 / total}%" else "$title · ${got / 1024 / 1024} МБ"
+                    }
+                    // Удаляем с очков, только если файл точно скачан целиком
+                    if (Core.settings.deleteAfterImport && size > 0 && (expected <= 0 || size == expected)) {
+                        deleteOnGlasses(network, URL(URL(base), name), name)
                     }
                     ok++
                     done += name
@@ -94,10 +117,36 @@ class WifiImporter(private val ctx: Context) {
         }
     }
 
-    private suspend fun connectWifi(ssid: String, password: String): Pair<Network, ConnectivityManager.NetworkCallback> =
-        withTimeoutOrNull(70000) {
+    /**
+     * Удаление файла на очках после импорта — как делает официальное приложение.
+     * Как именно оно удаляет, мы не знаем; пробуем HTTP DELETE и пишем ответ в журнал.
+     */
+    private suspend fun deleteOnGlasses(network: Network, url: URL, name: String) = withContext(Dispatchers.IO) {
+        val c = network.openConnection(url) as HttpURLConnection
+        try {
+            c.connectTimeout = 5000
+            c.readTimeout = 10000
+            c.requestMethod = "DELETE"
+            c.setRequestProperty("User-Agent", "TSClient/1.0")
+            val code = c.responseCode
+            Core.log(if (code in 200..299) "Удалено с очков: $name" else "Очки не удалили $name (HTTP $code)")
+        } catch (e: Exception) {
+            Core.log("Очки не удалили $name: ${e.message}")
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    private suspend fun connectWifi(
+        ssid: String, password: String, exact: Boolean, timeoutMs: Int,
+    ): Pair<Network, ConnectivityManager.NetworkCallback> =
+        withTimeoutOrNull(timeoutMs + 5000L) {
             suspendCancellableCoroutine<Pair<Network, ConnectivityManager.NetworkCallback>> { cont ->
-                val spec = WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(password).build()
+                val spec = WifiNetworkSpecifier.Builder().apply {
+                    if (exact) setSsid(ssid)
+                    else setSsidPattern(android.os.PatternMatcher("AiGlass", android.os.PatternMatcher.PATTERN_PREFIX))
+                    setWpa2Passphrase(password)
+                }.build()
                 val request = NetworkRequest.Builder()
                     .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                     .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -112,7 +161,7 @@ class WifiImporter(private val ctx: Context) {
                         if (cont.isActive) cont.resumeWithException(IOException("Wi-Fi очков не найден или подключение отклонено"))
                     }
                 }
-                cm.requestNetwork(request, cb, 60000)
+                cm.requestNetwork(request, cb, timeoutMs)
                 cont.invokeOnCancellation { runCatching { cm.unregisterNetworkCallback(cb) } }
             }
         } ?: throw IOException("не удалось подключиться к Wi-Fi очков")

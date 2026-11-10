@@ -41,6 +41,18 @@ class Voice(private val ctx: Context) {
     /** Заранее запустить синтез речи: его первый запуск занимает до пары секунд. */
     suspend fun warm() { runCatching { ensureTts() } }
 
+    /** Двойной низкий сигнал: разговор закончен, ассистент больше не слушает. */
+    suspend fun beepEnd() {
+        withContext(Dispatchers.Main) {
+            runCatching {
+                val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 60)
+                tg.startTone(ToneGenerator.TONE_PROP_NACK, 300)
+                delay(350)
+                tg.release()
+            }
+        }
+    }
+
     suspend fun beep() {
         withContext(Dispatchers.Main) {
             runCatching {

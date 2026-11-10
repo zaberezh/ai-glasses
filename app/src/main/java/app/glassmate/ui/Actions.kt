@@ -274,6 +274,40 @@ object Actions {
         }
     }
 
+    /**
+     * Проверка, получает ли модель картинку вообще. Рисуем крупное случайное число и
+     * спрашиваем, что на картинке. Если сервис-посредник теряет изображения, модель
+     * ответит наугад — и сразу видно, что дело не в очках.
+     */
+    fun visionTest(h: Host) {
+        val n = (10..99).random()
+        val bmp = android.graphics.Bitmap.createBitmap(512, 512, android.graphics.Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(bmp).apply {
+            drawColor(0xFFFFFFFF.toInt())
+            drawText("$n", 256f, 330f, android.graphics.Paint().apply {
+                color = 0xFF000000.toInt(); textSize = 260f; isAntiAlias = true
+                textAlign = android.graphics.Paint.Align.CENTER; isFakeBoldText = true
+            })
+        }
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        h.toast("Проверяю зрение модели…")
+        Core.scope.launch {
+            val msg = try {
+                val a = app.glassmate.ai.AiClient(Core.settings)
+                    .ask(emptyList(), "Прочитай число на картинке. Ответь только числом.", out.toByteArray())
+                val ok = a.contains("$n")
+                Core.log("Тест зрения: на картинке $n, модель ответила «$a»")
+                if (ok) "Модель видит картинки: прочитала $n верно."
+                else "Модель НЕ видит картинки: на картинке $n, а она ответила «${a.take(60)}». " +
+                    "Скорее всего, сервис-посредник или модель не принимают изображения — выберите другую модель."
+            } catch (e: Exception) {
+                "Проверка не удалась: ${e.message}"
+            }
+            h.ui.launch { h.ctx.dialog().setTitle("Зрение модели").setMessage(msg).setPositiveButton("ОК", null).show() }
+        }
+    }
+
     fun importMedia(h: Host, onDone: (() -> Unit)? = null) {
         requireGlasses(h) ?: return
         if (Core.importProgress.value.isNotEmpty()) {
@@ -288,7 +322,17 @@ object Actions {
                 h.ui.launch { h.toast("Импортировано файлов: $n"); onDone?.invoke() }
             } catch (e: Exception) {
                 Core.log("Импорт: ошибка — ${e.message}")
-                h.ui.launch { h.toast("Импорт не удался: ${e.message}") }
+                h.ui.launch {
+                    if (e is WifiImporter.LocationOffException) {
+                        h.ctx.dialog().setTitle("Включите геолокацию")
+                            .setMessage("Android ищет сети Wi-Fi только при включённой геолокации — поэтому её просит и " +
+                                "официальное приложение. Включите её и повторите импорт; после импорта можно выключить.")
+                            .setPositiveButton("Открыть настройки") { _, _ ->
+                                runCatching { h.ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                            }
+                            .setNegativeButton("Отмена", null).show()
+                    } else h.toast("Импорт не удался: ${e.message}")
+                }
             } finally {
                 Core.importProgress.value = ""
             }

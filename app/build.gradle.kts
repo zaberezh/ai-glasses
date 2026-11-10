@@ -11,8 +11,8 @@ android {
         applicationId = "app.glassmate"
         minSdk = 29
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.13"
+        versionCode = 14
+        versionName = "0.14"
     }
 
     // Постоянный ключ подписи: без него каждая сборка на GitHub получает новый ключ,

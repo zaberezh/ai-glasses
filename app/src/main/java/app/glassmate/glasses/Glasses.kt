@@ -138,14 +138,14 @@ class Glasses(private val link: GlassesLink) {
             val done = CompletableDeferred<Unit>()
             val t0 = SystemClock.elapsedRealtime()
             var firstAt = 0L
+            var chunks = 0
             // куски принимаем прямо в потоке чтения — так ни один не теряется
             link.setSink(Cmd.AI_PIC_PUSH) { m ->
                 if (m.payload.isEmpty()) return@setSink
+                if (chunks == 0) Core.log("ИИ-снимок: первый кусок ${m.payload.toHex(12)}")
+                chunks++
                 when (val st = m.payload[0].toInt() and 0xFF) {
                     0, 1 -> {
-                        // Хвост прошлого, отменённого снимка: ждём начало нового JPEG (FF D8)
-                        val isStart = m.payload.size >= 3 && m.payload[1] == 0xFF.toByte() && m.payload[2] == 0xD8.toByte()
-                        if (firstAt == 0L && !isStart) return@setSink
                         if (firstAt == 0L) firstAt = SystemClock.elapsedRealtime()
                         synchronized(out) { out.write(m.payload, 1, m.payload.size - 1) }
                         if (st == 0) done.complete(Unit)
@@ -160,11 +160,17 @@ class Glasses(private val link: GlassesLink) {
             }
             try {
                 val finished = withTimeoutOrNull(timeoutMs) { done.await() } != null
-                val bytes = synchronized(out) { out.toByteArray() }
-                if (!finished && !looksLikeJpeg(bytes)) throw IOException("снимок не пришёл за ${timeoutMs / 1000} с")
+                val bytes = trimToJpeg(synchronized(out) { out.toByteArray() })
+                if (!finished && !looksLikeJpeg(bytes)) {
+                    throw IOException(
+                        if (chunks == 0) "камера не прислала ни одного куска за ${timeoutMs / 1000} с"
+                        else "снимок пришёл не целиком ($chunks кусков, ${bytes.size / 1024} КБ)"
+                    )
+                }
                 if (bytes.isEmpty()) throw IOException("пустой снимок")
+                if (!looksLikeJpeg(bytes)) Core.log("ИИ-снимок: не похож на JPEG, начало ${bytes.toHex(8)}, конец ${bytes.copyOfRange(maxOf(0, bytes.size - 4), bytes.size).toHex()}")
                 val now = SystemClock.elapsedRealtime()
-                Core.log("ИИ-снимок: ${bytes.size / 1024} КБ, первый кусок через ${firstAt - t0} мс, весь за ${now - t0} мс")
+                Core.log("ИИ-снимок: ${bytes.size / 1024} КБ, $chunks кусков, первый через ${firstAt - t0} мс, весь за ${now - t0} мс")
                 lastWarmAt = now
                 bytes
             } finally {
@@ -172,6 +178,20 @@ class Glasses(private val link: GlassesLink) {
                 req.cancel()
             }
         }
+    }
+
+    /**
+     * Обрезает всё до начала JPEG (FF D8 FF). Так отбрасывается хвост прошлого, прерванного
+     * снимка, если он долетел уже после нового запроса. Если начала нет — данные как есть.
+     */
+    private fun trimToJpeg(b: ByteArray): ByteArray {
+        for (i in 0 until b.size - 2) {
+            if (b[i] == 0xFF.toByte() && b[i + 1] == 0xD8.toByte() && b[i + 2] == 0xFF.toByte()) {
+                if (i > 0) Core.log("ИИ-снимок: отброшено $i байт перед началом JPEG")
+                return if (i == 0) b else b.copyOfRange(i, b.size)
+            }
+        }
+        return b
     }
 
     private fun looksLikeJpeg(b: ByteArray) =

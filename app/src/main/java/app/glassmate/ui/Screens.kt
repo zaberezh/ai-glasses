@@ -140,6 +140,16 @@ fun settingsScreen(h: Host): View = h.screen("Настройки") { c ->
             s.useGlassesMic = it
         })
         gap(c)
+        c.addView(switchRow(R.drawable.ic_sparkles, "Режим разговора",
+            "После ответа ассистент сам снова слушает. Замолчите или скажите «стоп» — разговор закончится", s.conversationMode) {
+            s.conversationMode = it
+        })
+        gap(c)
+        c.addView(arrowRow(R.drawable.ic_eye, "Проверить, видит ли модель картинки",
+            "Отправляет модели картинку с числом и проверяет ответ") {
+            Actions.visionTest(h)
+        }.first)
+        gap(c)
         c.addView(switchRow(R.drawable.ic_touch, "Касания дужки запускают ИИ",
             "Плей/пауза — вопрос, следующий трек — «Что я вижу?»", s.mediaButtons) {
             s.mediaButtons = it
@@ -167,6 +177,11 @@ fun settingsScreen(h: Host): View = h.screen("Настройки") { c ->
         c.addView(lang.first)
 
         c.addView(sectionTitle("Устройство"))
+        c.addView(switchRow(R.drawable.ic_download, "Удалять с очков после импорта",
+            "Только файлы, скачанные целиком. Если очки не дают удалять — это будет видно в журнале", s.deleteAfterImport) {
+            s.deleteAfterImport = it
+        })
+        gap(c)
         c.addView(arrowRow(R.drawable.ic_time, "Синхронизировать время") {
             h.onGlasses("Время на очках обновлено") { it.setTime() }
         }.first)

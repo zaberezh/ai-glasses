@@ -97,6 +97,16 @@ class Settings(ctx: Context) {
         get() = p.getBoolean("autoPhoto", true)
         set(v) = putB("autoPhoto", v)
 
+    /** Режим разговора: после ответа ассистент сам снова слушает, пока вы не замолчите. */
+    var conversationMode: Boolean
+        get() = p.getBoolean("conversationMode", true)
+        set(v) = putB("conversationMode", v)
+
+    /** Удалять файлы с очков, когда они скачаны на телефон целиком. */
+    var deleteAfterImport: Boolean
+        get() = p.getBoolean("deleteAfterImport", true)
+        set(v) = putB("deleteAfterImport", v)
+
     /** Будить камеру очков заранее: при подключении и при открытии приложения. */
     var warmCamera: Boolean
         get() = p.getBoolean("warmCamera", true)

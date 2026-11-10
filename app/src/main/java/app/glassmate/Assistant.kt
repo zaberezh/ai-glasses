@@ -69,7 +69,7 @@ class Assistant(private val ctx: Context) {
         job = Core.scope.launch {
             old?.join()
             try {
-                process(source, typed, forcePhoto)
+                converse(source, typed, forcePhoto)
             } catch (e: CancellationException) {
                 Core.log("Ассистент: прервано")
                 throw e
@@ -87,13 +87,39 @@ class Assistant(private val ctx: Context) {
     @Volatile private var lastJpeg: ByteArray? = null
     @Volatile private var lastJpegAt = 0L
 
-    private suspend fun process(source: String, typed: String?, forcePhoto: Boolean = false) = coroutineScope {
+    /**
+     * Режим разговора: после ответа ассистент сам снова слушает — кнопку жать не нужно.
+     * Разговор кончается, если вы промолчали или сказали «стоп», «хватит», «спасибо».
+     * Вопрос, набранный текстом в приложении, разговор не начинает.
+     */
+    private suspend fun converse(source: String, typed: String?, forcePhoto: Boolean) {
+        var turn = 0
+        while (true) {
+            val first = turn == 0
+            val r = process(
+                if (first) source else "продолжение разговора",
+                if (first) typed else null,
+                forcePhoto = first && forcePhoto,
+                followOn = !first,
+            )
+            turn++
+            val keepGoing = Core.settings.conversationMode && r == Turn.ANSWERED && source != "текст"
+            if (!keepGoing) break
+            if (turn >= 30) break // защита от бесконечного разговора с телевизором
+        }
+    }
+
+    private enum class Turn { ANSWERED, NOTHING, STOPPED }
+
+    private suspend fun process(
+        source: String, typed: String?, forcePhoto: Boolean = false, followOn: Boolean = false,
+    ): Turn = coroutineScope {
         val s = Core.settings
         if (s.apiKey.isBlank()) {
             Core.log("Укажите API-ключ модели в настройках")
             Core.addChat(Core.ChatItem(false, "Сначала укажите адрес и ключ API: AI → ⚙ Настройки ИИ-помощника."))
             voice.speak("Сначала укажите ключ API в приложении", s.language)
-            return@coroutineScope
+            return@coroutineScope Turn.STOPPED
         }
         Core.log("Ассистент: $source")
         val glasses = Core.glasses
@@ -107,10 +133,14 @@ class Assistant(private val ctx: Context) {
 
         // Камера просыпается долго, поэтому для голосового вопроса начинаем снимать заранее,
         // а нужен ли снимок, решаем, когда вопрос уже распознан. Ненужный снимок просто не ждём.
+        // Почему снимка нет — чтобы сказать об этом, а не отдавать модели вопрос без картинки
+        var photoError: String? = if (glasses == null) "очки не подключены" else null
+        // в продолжении разговора заранее не снимаем: большинство реплик — не про то, что видно
         val photo: Deferred<ByteArray?>? =
-            if (s.attachPhoto && glasses != null && liveFrame == null && (typed == null || forcePhoto || needsPhoto(typed))) async {
+            if (s.attachPhoto && glasses != null && liveFrame == null && !followOn &&
+                (typed == null || forcePhoto || needsPhoto(typed))) async {
                 runCatching { glasses.captureAiPhoto() }
-                    .onFailure { Core.log("Снимок не получен: ${it.message}") }
+                    .onFailure { photoError = it.message; Core.log("Снимок не получен: ${it.message}") }
                     .getOrNull()
             } else null
 
@@ -120,12 +150,24 @@ class Assistant(private val ctx: Context) {
             voice.listen(s.language, s.useGlassesMic)
         }
         if (question.isNullOrBlank()) {
+            photo?.cancel()
+            if (followOn) {
+                // в разговоре тишина — это просто конец разговора
+                Core.log("Разговор закончен: тишина")
+                voice.beepEnd()
+                return@coroutineScope Turn.NOTHING
+            }
             Core.log("Вопрос не распознан")
             Core.addChat(Core.ChatItem(false, "Не расслышал вопрос, попробуйте ещё раз."))
-            photo?.cancel()
-            return@coroutineScope
+            return@coroutineScope Turn.NOTHING
         }
         Core.log("Вы: $question")
+        if (stopWords.matches(question.trim())) {
+            photo?.cancel()
+            Core.log("Разговор закончен по слову «$question»")
+            voice.beepEnd()
+            return@coroutineScope Turn.STOPPED
+        }
         val tAsked = android.os.SystemClock.elapsedRealtime()
 
         val wantPhoto = s.attachPhoto && (forcePhoto || !s.autoPhoto || needsPhoto(question))
@@ -133,12 +175,27 @@ class Assistant(private val ctx: Context) {
             System.currentTimeMillis() - lastJpegAt < 120_000 && isFollowUp(question)
         val jpeg: ByteArray? = when {
             wantPhoto && liveFrame != null -> prepareImage(liveFrame, AiClient.needsDetail(question))
-            wantPhoto && photo != null -> {
+            wantPhoto && glasses != null -> {
                 Core.assistantState.value = "Смотрю…"
-                photo.await()?.let { prepareImage(it, AiClient.needsDetail(question)) }
+                // в разговоре снимок не начинали заранее — снимаем сейчас
+                val raw = photo?.await() ?: if (photo == null) runCatching { glasses.captureAiPhoto() }
+                    .onFailure { photoError = it.message; Core.log("Снимок не получен: ${it.message}") }
+                    .getOrNull() else null
+                raw?.let { prepareImage(it, AiClient.needsDetail(question)) }
             }
             followUp -> lastJpeg
             else -> { photo?.cancel(); null }
+        }
+        // Вопрос про то, что видно, а снимка нет: модели его не отдаём — иначе она выдумает
+        // «фонари и светофоры». Честно говорим, что не так.
+        if (wantPhoto && jpeg == null) {
+            val why = photoError ?: "камера не прислала кадр"
+            Core.addChat(Core.ChatItem(true, question))
+            val msg = "Не вижу: снимок с очков не получен ($why)."
+            Core.addChat(Core.ChatItem(false, msg))
+            Core.log(msg)
+            voice.speak("Не получилось снять. $why", s.language)
+            return@coroutineScope Turn.STOPPED
         }
         if (jpeg != null && !followUp) { lastJpeg = jpeg; lastJpegAt = System.currentTimeMillis() }
         Core.log(when {
@@ -180,10 +237,17 @@ class Assistant(private val ctx: Context) {
         }
         if (firstPiece) speaker.feed(answer + " ")
         speaker.finish()
+        Turn.ANSWERED
     }
 
     companion object {
         const val LISTENING = "Слушаю…"
+
+        /** Слова, которыми заканчивают разговор. */
+        private val stopWords = Regex(
+            "^(стоп|хватит|всё|все|спасибо|пока|отбой|закончили|достаточно|stop|thanks|bye)[.!,\\s]*(спасибо)?[.!]*$",
+            RegexOption.IGNORE_CASE
+        )
 
         /** Вопрос про то, что перед глазами. */
         private val visual = Regex(

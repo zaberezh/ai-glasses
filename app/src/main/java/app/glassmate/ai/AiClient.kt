@@ -106,6 +106,15 @@ class AiClient(private val s: Settings) {
         return "https://$b"
     }
 
+    /**
+     * Системная инструкция. Если снимка нет, говорим это модели прямо: иначе на вопрос
+     * «что ты видишь» она описывает выдуманную картинку.
+     */
+    private fun system(jpeg: ByteArray?): String =
+        if (jpeg != null) s.systemPrompt
+        else s.systemPrompt + " К этому сообщению снимок НЕ приложен — ты сейчас ничего не видишь. " +
+            "Не описывай окружение и не придумывай, что перед пользователем."
+
     private fun anthropic(history: List<Turn>, question: String, jpeg: ByteArray?, onDelta: (String) -> Unit): String {
         val content = JSONArray()
         if (jpeg != null) {
@@ -127,7 +136,7 @@ class AiClient(private val s: Settings) {
         val body = JSONObject()
             .put("model", s.model.ifBlank { Settings.DEFAULT_ANTHROPIC_MODEL })
             .put("max_tokens", 300)
-            .put("system", s.systemPrompt)
+            .put("system", system(jpeg))
             .put("messages", messages)
             .put("stream", useStream())
 
@@ -159,9 +168,7 @@ class AiClient(private val s: Settings) {
 
     private fun openAi(history: List<Turn>, question: String, jpeg: ByteArray?, onDelta: (String) -> Unit): String {
         val messages = JSONArray()
-        if (s.systemPrompt.isNotBlank()) {
-            messages.put(JSONObject().put("role", "system").put("content", s.systemPrompt))
-        }
+        messages.put(JSONObject().put("role", "system").put("content", system(jpeg)))
         history.forEach { messages.put(JSONObject().put("role", it.role).put("content", it.text)) }
         val content = JSONArray().put(JSONObject().put("type", "text").put("text", question))
         if (jpeg != null) {

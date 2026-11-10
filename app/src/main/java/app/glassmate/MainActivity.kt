@@ -180,9 +180,10 @@ class MainActivity : Activity(), Host {
             need += Manifest.permission.READ_MEDIA_IMAGES
             need += Manifest.permission.READ_MEDIA_VIDEO
         } else {
-            need += Manifest.permission.ACCESS_FINE_LOCATION
             need += Manifest.permission.READ_EXTERNAL_STORAGE
         }
+        // геолокация нужна для поиска Wi-Fi очков при импорте (на любой версии Android)
+        need += Manifest.permission.ACCESS_FINE_LOCATION
         val missing = need.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 1)
     }
