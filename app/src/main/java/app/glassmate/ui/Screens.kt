@@ -321,7 +321,7 @@ fun aiSettingsScreen(h: Host): View = h.screen("Настройки ИИ-помо
         c.addView(switchRow(R.drawable.ic_sparkles, "Быстрый режим", "Модель меньше «думает» (reasoning effort: low)", fast) { fast = it })
         gap(c)
         c.addView(switchRow(R.drawable.ic_send, "Потоковый ответ",
-            "Озвучка начинается раньше, но через некоторые сервисы ответ медленнее и обрывается", stream) { stream = it })
+            "Озвучка начинается с первых слов. Если поток обрывается, приложение само переспросит без него", stream) { stream = it })
 
         c.addView(sectionTitle("Live-режим (Gemini)"))
         c.addView(label(

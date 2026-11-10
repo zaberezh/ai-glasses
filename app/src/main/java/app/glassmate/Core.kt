@@ -52,6 +52,10 @@ object Core {
     val battery = MutableStateFlow<Pair<Int, Boolean>?>(null)
     /** Что сейчас пишут очки: "video", "audio" или null. */
     val recording = MutableStateFlow<String?>(null)
+    /** Когда началась запись (SystemClock.elapsedRealtime) — для таймера на плитке. */
+    @Volatile var recordingSince = 0L
+    /** Ход импорта по Wi-Fi: «Импорт: файл 3 из 12 · 45%». Пусто — импорт не идёт. */
+    val importProgress = MutableStateFlow("")
     /** Маска способностей очков (GLASS_ABILITY_*), null — ещё не приходила. */
     val abilities = MutableStateFlow<Int?>(null)
     /** Очки просят скрыть запись: бит GLASS_ABILITY_HIDE_RECORD (512). */
@@ -266,6 +270,7 @@ object Core {
                         log("Очки: сигнал ИИ-кнопки (${m.payload.toHex()})")
                         if (settings.aiKeyTrigger) assistant.trigger("ИИ-кнопка очков")
                     }
+                    Cmd.IN_EAR_DETECT -> log("Датчик ношения: ${m.payload.toHex()}")
                     Cmd.POWER -> m.payload.firstOrNull()?.let { battery.value = Glasses.parsePower(it) }
                     0x05 -> log("Очки сообщили новые настройки кнопок: ${m.payload.toHex()}")
                     else -> log("← 0x%02X%s: %s".format(

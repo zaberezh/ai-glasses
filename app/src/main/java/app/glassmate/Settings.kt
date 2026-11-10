@@ -9,6 +9,26 @@ class Settings(ctx: Context) {
     private fun put(key: String, v: String) = p.edit().putString(key, v).apply()
     private fun putB(key: String, v: Boolean) = p.edit().putBoolean(key, v).apply()
 
+    // Ключи API лежат зашифрованными ключом из Android Keystore: его нельзя вынуть из телефона,
+    // поэтому копия файла настроек без самого телефона бесполезна.
+    private val secrets = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun secret(key: String): String = secrets.getOrPut(key) {
+        val enc = p.getString("$key.enc", null)
+        if (enc != null) return@getOrPut Vault.decrypt(enc) ?: ""
+        // старая версия хранила ключ открытым текстом — шифруем и стираем открытую копию
+        val plain = p.getString(key, null).orEmpty()
+        if (plain.isNotEmpty()) putSecret(key, plain)
+        plain
+    }
+
+    private fun putSecret(key: String, v: String) {
+        secrets[key] = v
+        val enc = if (v.isEmpty()) "" else Vault.encrypt(v)
+        if (enc != null) p.edit().putString("$key.enc", enc).remove(key).apply()
+        else p.edit().putString(key, v).remove("$key.enc").apply() // Keystore недоступен — как раньше
+    }
+
     /** "anthropic" или "openai" (любой OpenAI-совместимый API: OpenAI, OpenRouter, Gemini, локальные модели). */
     var provider: String
         get() = str("provider", "openai")
@@ -23,8 +43,8 @@ class Settings(ctx: Context) {
         set(v) = put("model", v)
 
     var apiKey: String
-        get() = str("apiKey", "")
-        set(v) = put("apiKey", v)
+        get() = secret("apiKey")
+        set(v) = putSecret("apiKey", v)
 
     var systemPrompt: String
         get() = str("systemPrompt", DEFAULT_PROMPT)
@@ -98,8 +118,8 @@ class Settings(ctx: Context) {
 
     /** Потоковый ответ: быстрее с прямым API, но через некоторые посредники медленнее и рвётся. */
     var streamAnswer: Boolean
-        get() = p.getBoolean("streamAnswer", false)
-        set(v) = putB("streamAnswer", v)
+        get() = p.getBoolean("streamAuto", true)
+        set(v) = putB("streamAuto", v)
 
     /** reasoning_effort = low для моделей OpenAI-формата. */
     var fastMode: Boolean
@@ -112,8 +132,8 @@ class Settings(ctx: Context) {
 
     // --- Gemini Live ---
     var geminiKey: String
-        get() = str("geminiKey", "")
-        set(v) = put("geminiKey", v)
+        get() = secret("geminiKey")
+        set(v) = putSecret("geminiKey", v)
 
     /** Пусто = выбрать автоматически из списка моделей с поддержкой Live. */
     var geminiLiveModel: String
@@ -146,4 +166,44 @@ class Settings(ctx: Context) {
                 "сейчас видит перед собой. Отвечай на языке вопроса, коротко (1–3 предложения), " +
                 "разговорным языком, без markdown, списков и эмодзи: ответ будет озвучен."
     }
+}
+
+/** Шифрование строк ключом AES-256-GCM, который живёт в Android Keystore. */
+private object Vault {
+    private const val ALIAS = "glassmate.settings"
+
+    private fun key(): javax.crypto.SecretKey {
+        val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(ALIAS, null) as? javax.crypto.SecretKey)?.let { return it }
+        val gen = javax.crypto.KeyGenerator.getInstance(
+            android.security.keystore.KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        gen.init(
+            android.security.keystore.KeyGenParameterSpec.Builder(
+                ALIAS,
+                android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+        )
+        return gen.generateKey()
+    }
+
+    /** null — зашифровать не удалось. */
+    fun encrypt(text: String): String? = runCatching {
+        val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(javax.crypto.Cipher.ENCRYPT_MODE, key())
+        val out = c.iv + c.doFinal(text.toByteArray(Charsets.UTF_8))
+        android.util.Base64.encodeToString(out, android.util.Base64.NO_WRAP)
+    }.getOrNull()
+
+    /** null — расшифровать не удалось (ключ Keystore утерян, например после восстановления из копии). */
+    fun decrypt(data: String): String? = runCatching {
+        if (data.isEmpty()) return@runCatching ""
+        val raw = android.util.Base64.decode(data, android.util.Base64.NO_WRAP)
+        val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(javax.crypto.Cipher.DECRYPT_MODE, key(), javax.crypto.spec.GCMParameterSpec(128, raw, 0, 12))
+        String(c.doFinal(raw, 12, raw.size - 12), Charsets.UTF_8)
+    }.getOrNull()
 }

@@ -132,10 +132,10 @@ class Assistant(private val ctx: Context) {
         val followUp = !wantPhoto && lastJpeg != null &&
             System.currentTimeMillis() - lastJpegAt < 120_000 && isFollowUp(question)
         val jpeg: ByteArray? = when {
-            wantPhoto && liveFrame != null -> prepareImage(liveFrame)
+            wantPhoto && liveFrame != null -> prepareImage(liveFrame, AiClient.needsDetail(question))
             wantPhoto && photo != null -> {
                 Core.assistantState.value = "Смотрю…"
-                photo.await()?.let { prepareImage(it) }
+                photo.await()?.let { prepareImage(it, AiClient.needsDetail(question)) }
             }
             followUp -> lastJpeg
             else -> { photo?.cancel(); null }
@@ -203,8 +203,12 @@ class Assistant(private val ctx: Context) {
         fun isFollowUp(q: String) = followUpRx.containsMatchIn(q.trim())
     }
 
-    /** Уменьшает снимок до 768 px по длинной стороне, показывает в приложении и при желании сохраняет. */
-    fun prepareImage(raw: ByteArray): ByteArray {
+    /**
+     * Уменьшает снимок, показывает в приложении и при желании сохраняет. Вопросам про текст
+     * и цифры (fine) — 768 px по длинной стороне, остальным хватает 512: модель отвечает быстрее.
+     */
+    fun prepareImage(raw: ByteArray, fine: Boolean = true): ByteArray {
+        val side = if (fine) 768 else 512
         val bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size) ?: run {
             Core.log("Снимок не похож на JPEG (${raw.size} байт)")
             return raw
@@ -212,8 +216,8 @@ class Assistant(private val ctx: Context) {
         Core.lastImage.value = bmp
         if (Core.settings.saveAiPhotos) saveToGallery(raw)
         val longSide = maxOf(bmp.width, bmp.height)
-        if (longSide <= 768) return raw
-        val k = 768f / longSide
+        if (longSide <= side) return raw
+        val k = side.toFloat() / longSide
         val scaled = Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt(), (bmp.height * k).toInt(), true)
         val out = ByteArrayOutputStream()
         scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)

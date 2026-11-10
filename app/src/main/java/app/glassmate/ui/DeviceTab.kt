@@ -229,6 +229,21 @@ fun deviceTab(h: Host): View = with(h.ctx) {
             }
         }
     }
+    // Таймер на плитке; когда вышел лимит длительности, очки останавливаются сами — сбрасываем и плитку
+    h.ui.launch {
+        while (true) {
+            kotlinx.coroutines.delay(1000)
+            val rec = Core.recording.value ?: continue
+            val sec = (android.os.SystemClock.elapsedRealtime() - Core.recordingSince) / 1000
+            val limitMin = if (rec == "video") Core.settings.videoLimit else Core.settings.audioLimit
+            if (sec >= limitMin * 60L) {
+                Core.recording.value = null
+                Core.log("Запись достигла лимита $limitMin мин — очки остановили её сами")
+                continue
+            }
+            (if (rec == "video") video else audio).text.text = "Стоп %d:%02d".format(sec / 60, sec % 60)
+        }
+    }
     h.ui.launch {
         Core.recording.collect { rec ->
             video.text.text = if (rec == "video") "Стоп" else "Видеозапись"

@@ -136,6 +136,7 @@ object Actions {
             }
             return
         }
+        Core.recordingSince = SystemClock.elapsedRealtime()
         Core.recording.value = kind
         Core.scope.launch {
             val t0 = SystemClock.elapsedRealtime()
@@ -148,7 +149,11 @@ object Actions {
                 return@launch
             }
             when (code) {
-                0 -> Core.log("Идёт $name, очки подтвердили за ${secs(t0)}")
+                0 -> {
+                    // таймер считаем от момента, когда очки действительно начали писать
+                    if (Core.recording.value == kind) Core.recordingSince = SystemClock.elapsedRealtime()
+                    Core.log("Идёт $name, очки подтвердили за ${secs(t0)}")
+                }
                 null -> Core.log("Старт записи ($name): очки не ответили — проверьте индикатор на очках")
                 else -> {
                     if (Core.recording.value == kind) Core.recording.value = null
@@ -271,7 +276,11 @@ object Actions {
 
     fun importMedia(h: Host, onDone: (() -> Unit)? = null) {
         requireGlasses(h) ?: return
-        h.toast("Импорт: включаю Wi-Fi на очках…")
+        if (Core.importProgress.value.isNotEmpty()) {
+            h.toast("Импорт уже идёт")
+            return
+        }
+        Core.importProgress.value = "Импорт: включаю Wi-Fi на очках…"
         Core.scope.launch {
             try {
                 val n = WifiImporter(h.ctx.applicationContext).import()
@@ -280,6 +289,8 @@ object Actions {
             } catch (e: Exception) {
                 Core.log("Импорт: ошибка — ${e.message}")
                 h.ui.launch { h.toast("Импорт не удался: ${e.message}") }
+            } finally {
+                Core.importProgress.value = ""
             }
         }
     }

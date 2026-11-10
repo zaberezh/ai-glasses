@@ -30,6 +30,7 @@ import app.glassmate.ui.meTab
 import app.glassmate.ui.vbox
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /** Главное окно: четыре вкладки снизу, как в AIBuds, и стек вложенных экранов поверх. */
 class MainActivity : Activity(), Host {
@@ -109,9 +110,22 @@ class MainActivity : Activity(), Host {
             }, lin(0, WRAP, 1f))
         }
 
+        val progress = label("", 13f, Col.TEXT).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setBackgroundColor(Col.CARD)
+            visibility = View.GONE
+        }
+        ui.launch {
+            Core.importProgress.collect {
+                progress.text = it
+                progress.visibility = if (it.isEmpty()) View.GONE else View.VISIBLE
+            }
+        }
         val main = vbox().apply {
             setBackgroundColor(Col.BG)
             addView(tabsHost, lin(MATCH, 0, 1f))
+            addView(progress)
             addView(nav)
         }
         overlayHost = FrameLayout(this)

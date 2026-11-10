@@ -52,10 +52,20 @@ class AiClient(private val s: Settings) {
                     } catch (e: IOException) {
                         if (cancelled) throw CancellationException("вопрос отменён")
                         lastErr = e
-                        // если часть ответа уже показана и озвучена, повтор только запутает
-                        if (sent.isNotEmpty()) throw e
-                        app.glassmate.Core.log("Связь с моделью оборвалась (${e.message}), повторяю…")
-                        delay(600L * (attempt + 1))
+                        // Поток оборвался после начала ответа: через этот сервис он ненадёжен —
+                        // до конца работы приложения спрашиваем без потока.
+                        val streamFailed = gotResponse && useStream()
+                        if (streamFailed) streamBroken += endpoint()
+                        if (sent.isNotEmpty()) {
+                            // часть ответа уже показана и озвучена — повтор только запутает; отдаём что есть
+                            app.glassmate.Core.log("Ответ оборвался на середине (${e.message})")
+                            return@withContext sent.toString().trim()
+                        }
+                        app.glassmate.Core.log(
+                            if (streamFailed) "Поток оборвался (${e.message}) — переспрашиваю без потока"
+                            else "Связь с моделью оборвалась (${e.message}), повторяю…"
+                        )
+                        if (!streamFailed) delay(600L * (attempt + 1))
                     }
                 }
                 throw IOException(explain(lastErr))
@@ -68,6 +78,10 @@ class AiClient(private val s: Settings) {
 
     @Volatile private var call: Call? = null
     @Volatile private var cancelled = false
+    /** Сервер начал отвечать (пришли заголовки с кодом 2xx) — значит, сбой не в соединении. */
+    @Volatile private var gotResponse = false
+
+    private fun useStream() = s.streamAnswer && endpoint() !in streamBroken
 
     /** Понятное объяснение сетевой ошибки вместо английского текста системы. */
     private fun explain(e: IOException?): String = when (e) {
@@ -115,7 +129,7 @@ class AiClient(private val s: Settings) {
             .put("max_tokens", 300)
             .put("system", s.systemPrompt)
             .put("messages", messages)
-            .put("stream", s.streamAnswer)
+            .put("stream", useStream())
 
         // Принимаем адрес в любом виде: host, https://host, https://host/v1 или полный …/v1/messages
         val base = normalizeBase(s.baseUrl, "https://api.anthropic.com")
@@ -153,7 +167,7 @@ class AiClient(private val s: Settings) {
         if (jpeg != null) {
             val url = "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP)
             // Общий вопрос («что это?») — снимок в низкой детализации: модель разбирает его в разы быстрее.
-            val detail = if (fineDetail.containsMatchIn(question)) "auto" else "low"
+            val detail = if (needsDetail(question)) "auto" else "low"
             content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", url).put("detail", detail)))
         }
         messages.put(JSONObject().put("role", "user").put("content", content))
@@ -163,7 +177,7 @@ class AiClient(private val s: Settings) {
         var base = normalizeBase(s.baseUrl, "https://api.openai.com/v1").removeSuffix("/chat/completions")
         if (Regex("^https?://[^/]+$").matches(base)) base += "/v1"
         val body = JSONObject().put("model", s.model).put("messages", messages)
-            .put("max_tokens", 300).put("stream", s.streamAnswer)
+            .put("stream", useStream())
         // быстрый режим: модель меньше «размышляет» перед коротким голосовым ответом
         // Быстрый режим: просим модель не «размышлять» перед коротким голосовым ответом — на это
         // и уходит основное время. Пробуем от самого быстрого уровня к более медленным; уровень,
@@ -185,6 +199,10 @@ class AiClient(private val s: Settings) {
         while (true) {
             val effort = EFFORTS[level]
             if (effort.isEmpty()) body.remove("reasoning_effort") else body.put("reasoning_effort", effort)
+            // У «думающих» моделей в лимит входят и размышления: если они не отключены,
+            // 300 токенов могло не хватить на сам ответ, и он обрезался.
+            body.put("max_tokens", if (effort == "none" || effort == "minimal") 300 else 800)
+            body.put("stream", useStream())
             try {
                 val answer = call(body)
                 if (s.fastMode && s.effortFor(effortKey) != effort) {
@@ -219,6 +237,7 @@ class AiClient(private val s: Settings) {
                 }.getOrNull()?.takeIf { it.isNotBlank() } ?: text.take(300)
                 throw HttpError(code, "HTTP $code: $msg")
             }
+            gotResponse = true
             val respBody = resp.body ?: throw IOException("Пустой ответ сервера")
             val isStream = resp.header("content-type")?.contains("event-stream") == true
             if (!isStream) {
@@ -256,6 +275,12 @@ class AiClient(private val s: Settings) {
     }
 
     companion object {
+        /** Адреса, через которые поток обрывался, — с ними работаем без потока. */
+        private val streamBroken: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+        /** Нужны ли вопросу мелкие детали кадра (текст, цифры). */
+        fun needsDetail(question: String) = fineDetail.containsMatchIn(question)
+
         /** Уровни «размышления» от самого быстрого; пустая строка — параметр не отправляется. */
         private val EFFORTS = listOf("none", "minimal", "low", "")
 

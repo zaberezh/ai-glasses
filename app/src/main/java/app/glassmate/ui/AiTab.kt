@@ -105,19 +105,27 @@ fun aiTab(h: Host): View = with(h.ctx) {
     }
     val mainButton = circleButton(R.drawable.ic_mic, Col.ACCENT, 50) {
         val q = input.text.toString().trim()
-        if (q.isEmpty()) {
-            Core.assistant.trigger("микрофон в чате")
-        } else {
-            input.setText("")
-            Core.assistant.askText(q)
+        when {
+            q.isNotEmpty() -> {
+                input.setText("")
+                Core.assistant.askText(q)
+            }
+            // ИИ слушает, думает или говорит — та же кнопка всё прерывает
+            Core.assistantState.value.isNotEmpty() -> Core.assistant.stop()
+            else -> Core.assistant.trigger("микрофон в чате")
         }
     }
     val mainIcon = mainButton.getChildAt(0) as ImageView
+    fun refreshIcon() = mainIcon.setImageResource(when {
+        !input.text.isNullOrBlank() -> R.drawable.ic_send
+        Core.assistantState.value.isNotEmpty() -> R.drawable.ic_stop
+        else -> R.drawable.ic_mic
+    })
     input.addTextChangedListener(object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         override fun afterTextChanged(s: Editable?) {
-            mainIcon.setImageResource(if (s.isNullOrBlank()) R.drawable.ic_mic else R.drawable.ic_send)
+            refreshIcon()
         }
     })
     root.addView(hbox(dp(12)).apply {
@@ -222,7 +230,8 @@ fun aiTab(h: Host): View = with(h.ctx) {
             state.text = shown
             state.visibility = if (shown.isEmpty()) View.GONE else View.VISIBLE
             val rr = dp(25).toFloat()
-            mainButton.background = clickable(rounded(if (st == app.glassmate.Assistant.LISTENING) Col.RED else Col.ACCENT, rr), rr)
+            mainButton.background = clickable(rounded(if (st.isNotEmpty()) Col.RED else Col.ACCENT, rr), rr)
+            refreshIcon()
             val cr = dp(18).toFloat()
             liveChip.background = clickable(rounded(if (live) Col.RED else Col.CARD2, cr), cr)
             liveChip.text = if (live) "■ Стоп" else "● Live"

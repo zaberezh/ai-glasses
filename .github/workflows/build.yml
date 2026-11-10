@@ -25,7 +25,10 @@ jobs:
         with:
           name: GlassMate-apk
           path: GlassMate.apk
-      - name: Publish release
+      # Рабочая сборка (ветка main) и тестовые (остальные ветки) лежат в разных релизах,
+      # чтобы эксперимент не затирал рабочий APK.
+      - name: Publish release (main)
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -33,3 +36,13 @@ jobs:
           body: Автоматическая сборка из ветки main. Скачайте GlassMate.apk и установите на телефон.
           files: GlassMate.apk
           make_latest: true
+      - name: Publish release (test)
+        if: github.ref != 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test
+          name: GlassMate (тестовая сборка)
+          body: Тестовая сборка из ветки ${{ github.ref_name }}, коммит ${{ github.sha }}. Ставится поверх рабочей версии.
+          files: GlassMate.apk
+          prerelease: true
+          make_latest: false

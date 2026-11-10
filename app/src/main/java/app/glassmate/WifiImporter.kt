@@ -45,6 +45,7 @@ class WifiImporter(private val ctx: Context) {
         if (!glasses.startFileServer(ssid, password)) throw IOException("очки не ответили на включение Wi-Fi")
 
         Core.log("Подключаюсь к Wi-Fi очков — подтвердите запрос системы, если он появится")
+        Core.importProgress.value = "Импорт: подключаюсь к Wi-Fi очков…"
         val (network, callback) = try {
             connectWifi(ssid, password)
         } catch (e: Exception) {
@@ -68,10 +69,15 @@ class WifiImporter(private val ctx: Context) {
             val fresh = files.filter { it !in done }
             Core.log("Файлов на очках: ${files.size}, новых: ${fresh.size}")
             var ok = 0
-            for (name in fresh) {
+            for ((idx, name) in fresh.withIndex()) {
+                val title = "Импорт: файл ${idx + 1} из ${fresh.size}"
+                Core.importProgress.value = title
                 try {
                     val t0 = System.currentTimeMillis()
-                    val size = download(network, URL(URL(base), name), name.substringAfterLast('/'))
+                    val size = download(network, URL(URL(base), name), name.substringAfterLast('/')) { got, total ->
+                        Core.importProgress.value =
+                            if (total > 0) "$title · ${got * 100 / total}%" else "$title · ${got / 1024 / 1024} МБ"
+                    }
                     ok++
                     done += name
                     Core.settings.importedFiles = done
@@ -143,7 +149,9 @@ class WifiImporter(private val ctx: Context) {
      * Качает файл сразу в галерею, не держа его в памяти: видео на сотни мегабайт
      * раньше читалось целиком в память и роняло приложение.
      */
-    private suspend fun download(network: Network, url: URL, name: String): Long = withContext(Dispatchers.IO) {
+    private suspend fun download(
+        network: Network, url: URL, name: String, onProgress: (Long, Long) -> Unit,
+    ): Long = withContext(Dispatchers.IO) {
         val uri = createEntry(name)
         val c = network.openConnection(url) as HttpURLConnection
         try {
@@ -152,6 +160,8 @@ class WifiImporter(private val ctx: Context) {
             c.setRequestProperty("User-Agent", "TSClient/1.0")
             if (c.responseCode !in 200..299) throw IOException("HTTP ${c.responseCode}")
             var total = 0L
+            val length = c.contentLengthLong
+            var shownAt = 0L
             val out = ctx.contentResolver.openOutputStream(uri) ?: throw IOException("галерея недоступна")
             out.use { o ->
                 c.inputStream.use { i ->
@@ -161,6 +171,8 @@ class WifiImporter(private val ctx: Context) {
                         if (n < 0) break
                         o.write(buf, 0, n)
                         total += n
+                        val now = System.currentTimeMillis()
+                        if (now - shownAt > 300) { shownAt = now; onProgress(total, length) }
                     }
                 }
             }
