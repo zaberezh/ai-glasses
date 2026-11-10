@@ -183,9 +183,18 @@ class Glasses(private val link: GlassesLink) {
      * Адрес сервера очки присылают уведомлением 0xE7 — его ловит Core.
      */
     suspend fun startFileServer(ssid: String, password: String): Boolean {
-        val r = link.request(Cmd.WIFI_CONFIG, wifiConfigPayload(1, ssid, password, 0)) ?: return false
-        if (status(r) != 0) Core.log("Ответ очков на настройку Wi-Fi: ${status(r)}")
-        return link.request(Cmd.FILE_MANAGE, timeoutMs = 10000) != null
+        // Wi-Fi включает тот же сопроцессор, что и камеру: он просыпается до 10 с,
+        // поэтому ждём столько же, сколько команды камеры. Прежних 8 с не хватало.
+        val r = link.request(Cmd.WIFI_CONFIG, wifiConfigPayload(1, ssid, password, 0), CAMERA_TIMEOUT)
+        if (r == null) Core.log("Очки не подтвердили включение Wi-Fi — всё равно пробую подключиться")
+        else if (status(r) != 0) Core.log("Ответ очков на настройку Wi-Fi: ${status(r)}")
+        val f = link.request(Cmd.FILE_MANAGE, timeoutMs = CAMERA_TIMEOUT)
+        // адрес файлов может прийти и прямо в ответе, а не только уведомлением
+        f?.cString()?.trim()?.takeIf { it.length >= 7 && it.count { c -> c == '.' } >= 3 && it.all { c -> c.code in 0x21..0x7E } }?.let {
+            Core.wifiFileAddress.value = it
+            Core.log("Адрес файлов на очках (из ответа): $it")
+        }
+        return r != null || f != null
     }
 
     companion object {

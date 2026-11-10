@@ -37,13 +37,22 @@ class WifiImporter(private val ctx: Context) {
         val ssid = "AiGlass" + mac.replace(":", "").uppercase()
         val password = "12345678"
 
+        val wifi = ctx.getSystemService(android.net.wifi.WifiManager::class.java)
+        if (wifi != null && !wifi.isWifiEnabled) throw IOException("включите Wi-Fi на телефоне и повторите")
+
         Core.wifiFileAddress.value = null
         Core.log("Включаю Wi-Fi на очках ($ssid)…")
-        if (!glasses.startFileServer(ssid, password)) throw IOException("очки не включили Wi-Fi")
+        if (!glasses.startFileServer(ssid, password)) throw IOException("очки не ответили на включение Wi-Fi")
 
         Core.log("Подключаюсь к Wi-Fi очков — подтвердите запрос системы, если он появится")
-        val (network, callback) = connectWifi(ssid, password)
+        val (network, callback) = try {
+            connectWifi(ssid, password)
+        } catch (e: Exception) {
+            runCatching { glasses.stopCamera() } // не оставляем Wi-Fi очков включённым впустую
+            throw e
+        }
         try {
+            Core.log("Wi-Fi очков подключён, жду адрес файлов")
             val address = withTimeoutOrNull(15000) { Core.wifiFileAddress.filterNotNull().first() }
                 ?: gatewayUrl(network)
                 ?: throw IOException("очки не сообщили адрес файлов")
@@ -52,6 +61,7 @@ class WifiImporter(private val ctx: Context) {
 
             val listText = String(httpGet(network, URL(URL(base), "media.config")), Charsets.UTF_8)
             val files = parseList(listText)
+            if (files.isEmpty()) Core.log("Список файлов пуст или не разобран: ${listText.take(300)}")
             // уже скачанное не качаем заново; имена пропавших с очков файлов забываем
             val known = Core.settings.importedFiles
             val done = known.intersect(files.toSet()).toMutableSet()
