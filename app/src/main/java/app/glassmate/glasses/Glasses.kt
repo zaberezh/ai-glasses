@@ -154,12 +154,24 @@ class Glasses(private val link: GlassesLink) {
                 }
             }
             // Ответ на команду может прийти позже самого снимка или не прийти вовсе — его не ждём
-            val req = launch {
+            fun shoot() = launch {
                 val code = runCatching { status(link.request(Cmd.CAMERA_SHOT, byteArrayOf(1), CAMERA_TIMEOUT)) }.getOrNull()
                 if (code != null && code != 0) Core.log("Ответ очков на ИИ-снимок: $code")
             }
+            var req = shoot()
             try {
-                val finished = withTimeoutOrNull(timeoutMs) { done.await() } != null
+                // Камера просыпается до 10 с. Если за 14 с не пришло ни куска — очки, похоже,
+                // пропустили команду (были заняты): повторяем её один раз.
+                val firstWait = minOf(14_000L, timeoutMs)
+                var finished = withTimeoutOrNull(firstWait) { done.await() } != null
+                if (!finished && timeoutMs > firstWait) {
+                    if (chunks == 0) {
+                        Core.log("ИИ-снимок: очки молчат $firstWait мс — повторяю команду")
+                        req.cancel()
+                        req = shoot()
+                    }
+                    finished = withTimeoutOrNull(timeoutMs - firstWait) { done.await() } != null
+                }
                 val bytes = trimToJpeg(synchronized(out) { out.toByteArray() })
                 if (!finished && !looksLikeJpeg(bytes)) {
                     throw IOException(

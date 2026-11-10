@@ -199,7 +199,7 @@ fun settingsScreen(h: Host): View = h.screen("Настройки") { c ->
         c.addView(arrowRow(R.drawable.ic_bluetooth, "Подключение очков") { Actions.connectDialog(h) }.first)
         gap(c)
         c.addView(switchRow(R.drawable.ic_camera, "Будить камеру заранее",
-            "При подключении и открытии приложения — чтобы фото и видео начинались без ожидания", s.warmCamera) {
+            "Опыт: запросы очкам при открытии приложения. Выключите, если съёмка перестала работать", s.warmCamera) {
             s.warmCamera = it
             if (it) Core.warmCamera()
         })

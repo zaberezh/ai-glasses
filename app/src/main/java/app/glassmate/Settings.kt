@@ -109,8 +109,8 @@ class Settings(ctx: Context) {
 
     /** Будить камеру очков заранее: при подключении и при открытии приложения. */
     var warmCamera: Boolean
-        get() = p.getBoolean("warmCamera", true)
-        set(v) = putB("warmCamera", v)
+        get() = p.getBoolean("warmCamera2", false)
+        set(v) = putB("warmCamera2", v)
 
     /** Имена файлов, уже импортированных с очков, — чтобы не качать их повторно. */
     var importedFiles: Set<String>
@@ -125,6 +125,10 @@ class Settings(ctx: Context) {
     /** Уровень reasoning_effort, который приняла модель (ключ — адрес|модель). null — ещё не подбирали. */
     fun effortFor(key: String): String? = p.getString("effort:$key", null)
     fun setEffortFor(key: String, v: String) = put("effort:$key", v)
+
+    /** Способ упаковки картинки, который понимает сервис (ключ — формат|адрес|модель). */
+    fun imageFormatFor(key: String): Int = p.getInt("imgfmt:$key", 0)
+    fun setImageFormatFor(key: String, v: Int) = p.edit().putInt("imgfmt:$key", v).apply()
 
     /** Потоковый ответ: быстрее с прямым API, но через некоторые посредники медленнее и рвётся. */
     var streamAnswer: Boolean

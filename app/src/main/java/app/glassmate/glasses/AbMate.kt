@@ -311,6 +311,6 @@ class FrameDecoder(private val onForeign: (ByteArray) -> Unit = {}) {
     }
 
     companion object {
-        const val REST_TTL_MS = 500L
+        const val REST_TTL_MS = 200L
     }
 }

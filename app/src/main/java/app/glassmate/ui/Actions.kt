@@ -293,16 +293,34 @@ object Actions {
         bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
         h.toast("Проверяю зрение модели…")
         Core.scope.launch {
-            val msg = try {
-                val a = app.glassmate.ai.AiClient(Core.settings)
-                    .ask(emptyList(), "Прочитай число на картинке. Ответь только числом.", out.toByteArray())
-                val ok = a.contains("$n")
-                Core.log("Тест зрения: на картинке $n, модель ответила «$a»")
-                if (ok) "Модель видит картинки: прочитала $n верно."
-                else "Модель НЕ видит картинки: на картинке $n, а она ответила «${a.take(60)}». " +
-                    "Скорее всего, сервис-посредник или модель не принимают изображения — выберите другую модель."
-            } catch (e: Exception) {
-                "Проверка не удалась: ${e.message}"
+            // Перебираем способы упаковки картинки, пока модель не прочитает число; рабочий запоминаем
+            val s = Core.settings
+            val formats = if (s.provider == "anthropic") 1 else app.glassmate.ai.AiClient.IMAGE_FORMATS
+            val tried = ArrayList<String>()
+            var found = -1
+            for (f in 0 until formats) {
+                val a = try {
+                    app.glassmate.ai.AiClient(s)
+                        .ask(emptyList(), "Прочитай число на картинке. Ответь только числом.", out.toByteArray(), imageFormat = f)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    "ошибка: ${e.message}"
+                }
+                Core.log("Тест зрения, способ ${f + 1}: на картинке $n, ответ «${a.take(120)}»")
+                tried += "способ ${f + 1}: «${a.take(50)}»"
+                if (a.contains("$n")) { found = f; break }
+            }
+            val msg = if (found >= 0) {
+                val key = app.glassmate.ai.AiClient(s).imageKey()
+                val changed = s.imageFormatFor(key) != found
+                s.setImageFormatFor(key, found)
+                "Модель видит картинки: прочитала $n верно (способ ${found + 1})." +
+                    if (changed) " Способ запомнен — теперь снимки с очков будут уходить так же." else ""
+            } else {
+                "Модель НЕ видит картинки ни одним способом. На картинке было $n.\n\n" + tried.joinToString("\n") +
+                    "\n\nЗначит, эта модель или сервис не принимают изображения. Выберите в настройках ИИ другую модель " +
+                    "(с поддержкой картинок) или формат «Claude (Anthropic)»."
             }
             h.ui.launch { h.ctx.dialog().setTitle("Зрение модели").setMessage(msg).setPositiveButton("ОК", null).show() }
         }

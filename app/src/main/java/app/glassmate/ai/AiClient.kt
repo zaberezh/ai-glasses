@@ -32,8 +32,10 @@ class AiClient(private val s: Settings) {
 
     suspend fun ask(
         history: List<Turn>, question: String, jpeg: ByteArray?,
+        imageFormat: Int? = null,
         onDelta: (String) -> Unit = {},
     ): String = coroutineScope {
+        forcedFormat = imageFormat
         // Вопрос отменили (задали новый, нажали «стоп») — обрываем и сетевой запрос, а не ждём его до конца
         val watcher = launch {
             try { awaitCancellation() } finally { cancelled = true; call?.cancel() }
@@ -78,8 +80,13 @@ class AiClient(private val s: Settings) {
 
     @Volatile private var call: Call? = null
     @Volatile private var cancelled = false
+    /** Способ упаковки картинки, заданный проверкой зрения; null — тот, что сохранён в настройках. */
+    @Volatile private var forcedFormat: Int? = null
     /** Сервер начал отвечать (пришли заголовки с кодом 2xx) — значит, сбой не в соединении. */
     @Volatile private var gotResponse = false
+
+    /** Ключ, под которым запоминается рабочий способ упаковки картинки. */
+    fun imageKey() = "${s.provider}|${s.baseUrl.trim()}|${s.model.trim()}"
 
     private fun useStream() = s.streamAnswer && endpoint() !in streamBroken
 
@@ -170,12 +177,37 @@ class AiClient(private val s: Settings) {
         val messages = JSONArray()
         messages.put(JSONObject().put("role", "system").put("content", system(jpeg)))
         history.forEach { messages.put(JSONObject().put("role", it.role).put("content", it.text)) }
-        val content = JSONArray().put(JSONObject().put("type", "text").put("text", question))
-        if (jpeg != null) {
+        val text = JSONObject().put("type", "text").put("text", question)
+        val content = JSONArray()
+        if (jpeg == null) content.put(text) else {
             val url = "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP)
-            // Общий вопрос («что это?») — снимок в низкой детализации: модель разбирает его в разы быстрее.
-            val detail = if (needsDetail(question)) "auto" else "low"
-            content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", url).put("detail", detail)))
+            // Сервисы-посредники понимают картинку по-разному, поэтому способов несколько.
+            // Рабочий подбирает «Проверка зрения модели» и запоминает для адреса и модели.
+            when (forcedFormat ?: s.imageFormatFor(imageKey())) {
+                // 0: как у OpenAI, с детализацией (low — модель разбирает снимок в разы быстрее)
+                0 -> {
+                    val detail = if (needsDetail(question)) "auto" else "low"
+                    content.put(text)
+                    content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", url).put("detail", detail)))
+                }
+                // 1: без поля detail, картинка перед текстом
+                1 -> {
+                    content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", url)))
+                    content.put(text)
+                }
+                // 2: адрес картинки строкой, а не объектом
+                2 -> {
+                    content.put(JSONObject().put("type", "image_url").put("image_url", url))
+                    content.put(text)
+                }
+                // 3: блок в формате Anthropic — его ждут посредники, которые сами переводят запрос для Claude
+                else -> {
+                    content.put(JSONObject().put("type", "image").put("source", JSONObject()
+                        .put("type", "base64").put("media_type", "image/jpeg")
+                        .put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP))))
+                    content.put(text)
+                }
+            }
         }
         messages.put(JSONObject().put("role", "user").put("content", content))
 
@@ -282,6 +314,9 @@ class AiClient(private val s: Settings) {
     }
 
     companion object {
+        /** Сколько способов упаковки картинки умеет формат OpenAI (см. openAi). */
+        const val IMAGE_FORMATS = 4
+
         /** Адреса, через которые поток обрывался, — с ними работаем без потока. */
         private val streamBroken: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
