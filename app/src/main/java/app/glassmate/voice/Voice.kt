@@ -38,6 +38,9 @@ class Voice(private val ctx: Context) {
         return if (ttsReady.await()) tts else null
     }
 
+    /** Заранее запустить синтез речи: его первый запуск занимает до пары секунд. */
+    suspend fun warm() { runCatching { ensureTts() } }
+
     suspend fun beep() {
         withContext(Dispatchers.Main) {
             runCatching {
@@ -73,8 +76,8 @@ class Voice(private val ctx: Context) {
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             // не обрывать фразу на первой короткой паузе
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
         }
         var bestPartial: String? = null

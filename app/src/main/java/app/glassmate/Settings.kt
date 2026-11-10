@@ -92,6 +92,10 @@ class Settings(ctx: Context) {
         get() = p.getStringSet("dnsCache", emptySet())?.toSet() ?: emptySet()
         set(v) = p.edit().putStringSet("dnsCache", v).apply()
 
+    /** Уровень reasoning_effort, который приняла модель (ключ — адрес|модель). null — ещё не подбирали. */
+    fun effortFor(key: String): String? = p.getString("effort:$key", null)
+    fun setEffortFor(key: String, v: String) = put("effort:$key", v)
+
     /** Потоковый ответ: быстрее с прямым API, но через некоторые посредники медленнее и рвётся. */
     var streamAnswer: Boolean
         get() = p.getBoolean("streamAnswer", false)

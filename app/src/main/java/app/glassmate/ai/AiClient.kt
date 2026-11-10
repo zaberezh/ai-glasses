@@ -152,7 +152,9 @@ class AiClient(private val s: Settings) {
         val content = JSONArray().put(JSONObject().put("type", "text").put("text", question))
         if (jpeg != null) {
             val url = "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP)
-            content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", url)))
+            // Общий вопрос («что это?») — снимок в низкой детализации: модель разбирает его в разы быстрее.
+            val detail = if (fineDetail.containsMatchIn(question)) "auto" else "low"
+            content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", url).put("detail", detail)))
         }
         messages.put(JSONObject().put("role", "user").put("content", content))
 
@@ -163,8 +165,11 @@ class AiClient(private val s: Settings) {
         val body = JSONObject().put("model", s.model).put("messages", messages)
             .put("max_tokens", 300).put("stream", s.streamAnswer)
         // быстрый режим: модель меньше «размышляет» перед коротким голосовым ответом
+        // Быстрый режим: просим модель не «размышлять» перед коротким голосовым ответом — на это
+        // и уходит основное время. Пробуем от самого быстрого уровня к более медленным; уровень,
+        // который модель приняла, запоминается, так что подбор случается один раз.
         val effortKey = "$base|${s.model}"
-        if (s.fastMode && effortKey !in noEffort) body.put("reasoning_effort", "low")
+        var level = if (s.fastMode) EFFORTS.indexOf(s.effortFor(effortKey)).takeIf { it >= 0 } ?: 0 else EFFORTS.lastIndex
 
         val headers = mapOf("Authorization" to "Bearer ${s.apiKey}")
         val call = { b: JSONObject -> post("$base/chat/completions", b, headers, onDelta,
@@ -177,15 +182,20 @@ class AiClient(private val s: Settings) {
                 json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                     ?: throw IOException("Пустой ответ модели")
             }) }
-        return try {
-            call(body)
-        } catch (e: HttpError) {
-            // модель не знает reasoning_effort — больше его не отправляем
-            if (e.code == 400 && body.has("reasoning_effort") && (e.message ?: "").contains("reasoning", true)) {
-                noEffort += effortKey
-                body.remove("reasoning_effort")
-                call(body)
-            } else throw e
+        while (true) {
+            val effort = EFFORTS[level]
+            if (effort.isEmpty()) body.remove("reasoning_effort") else body.put("reasoning_effort", effort)
+            try {
+                val answer = call(body)
+                if (s.fastMode && s.effortFor(effortKey) != effort) {
+                    s.setEffortFor(effortKey, effort)
+                    app.glassmate.Core.log("Быстрый режим: модель приняла reasoning_effort = ${effort.ifEmpty { "(без параметра)" }}")
+                }
+                return answer
+            } catch (e: HttpError) {
+                // модель не знает такой уровень (или сам параметр) — пробуем следующий
+                if ((e.code == 400 || e.code == 422) && level < EFFORTS.lastIndex) level++ else throw e
+            }
         }
     }
 
@@ -246,11 +256,14 @@ class AiClient(private val s: Settings) {
     }
 
     companion object {
-        /**
-         * Модели (адрес|название), которые не знают reasoning_effort. Запоминается на всё время
-         * работы приложения: раньше флаг жил один вопрос, и каждый вопрос к такой модели
-         * начинался с лишнего отклонённого запроса.
-         */
-        private val noEffort: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        /** Уровни «размышления» от самого быстрого; пустая строка — параметр не отправляется. */
+        private val EFFORTS = listOf("none", "minimal", "low", "")
+
+        /** Вопросы, где важны мелкие детали кадра (текст, цифры), — им нужен снимок в полном качестве. */
+        private val fineDetail = Regex(
+            "прочитай|прочти|читай|надпис|текст|переведи|вывеск|этикет|ценник|сколько стоит|цен[аыу]|номер|" +
+                "меню|табличк|состав|экран|написано|read|text|translate|price",
+            RegexOption.IGNORE_CASE
+        )
     }
 }

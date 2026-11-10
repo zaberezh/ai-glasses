@@ -99,6 +99,7 @@ class Assistant(private val ctx: Context) {
         val glasses = Core.glasses
         // пока слушаем вопрос и снимаем — заранее открываем соединение с сервером модели
         runCatching { Net.warm(AiClient(s).endpoint()) }
+        launch { voice.warm() } // и синтез речи — чтобы ответ зазвучал без паузы на его запуск
         val t0 = android.os.SystemClock.elapsedRealtime()
 
         // Свежий кадр из «живого взгляда» — снимать не нужно
@@ -125,6 +126,7 @@ class Assistant(private val ctx: Context) {
             return@coroutineScope
         }
         Core.log("Вы: $question")
+        val tAsked = android.os.SystemClock.elapsedRealtime()
 
         val wantPhoto = s.attachPhoto && (forcePhoto || !s.autoPhoto || needsPhoto(question))
         val followUp = !wantPhoto && lastJpeg != null &&
@@ -146,6 +148,7 @@ class Assistant(private val ctx: Context) {
         })
         Core.addChat(Core.ChatItem(true, question, if (jpeg != null && !followUp) Core.lastImage.value else null))
         Core.assistantState.value = "Думаю…"
+        val tSent = android.os.SystemClock.elapsedRealtime()
 
         val turns = synchronized(history) { history.toList() }
         val speaker = voice.stream(s.language)
@@ -164,6 +167,8 @@ class Assistant(private val ctx: Context) {
         }.ifBlank { "Модель ничего не ответила." }
         if (firstPiece) Core.addChat(Core.ChatItem(false, answer)) else Core.updateLastChat(answer)
         Core.log("ИИ: $answer")
+        // по этой строке видно, на что ушло время
+        Core.log("Время: вопрос ${tAsked - t0} мс, снимок ${tSent - tAsked} мс, модель ${android.os.SystemClock.elapsedRealtime() - tSent} мс")
         Core.lastAnswer.value = answer
         synchronized(history) {
             history += AiClient.Turn("user", question)
