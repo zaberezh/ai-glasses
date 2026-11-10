@@ -58,6 +58,13 @@ object Info {
     const val NAME = 0x03
     const val KEY_SETTINGS = 0x05
     const val VOLUME = 0x06
+    /** Типы очков — из массива glassInfoToRequest в DeviceInfoRequest. */
+    const val GLASS_SN = 0x85
+    const val GLASS_DEVICE_MODEL = 0x86
+    const val AI_CHAT_SUPPORT = 0x8A
+    const val RESOLUTION = 0x93
+    const val SCREEN_SWITCH = 0x9A
+    const val WORD_SPEED = 0x9C
     /** INFO_DEVICE_ABILITY / INFO_DEVICE_CAPABILITIES: маска способностей, сырые байты. */
     const val DEVICE_ABILITY = 0xFE
     const val MAX_PACKET_SIZE = 0xFF
@@ -87,6 +94,21 @@ object Keys {
         8 to "Игровой режим",
         9 to "Режим шумоподавления",
     )
+}
+
+/**
+ * Ключи TLV для Cmd.GLASS_CONFIG (0xF7) — из GlassConfigRequest в SDK.
+ * Кадр: 0xF7 [ключ][длина][значение].
+ */
+object GlassKey {
+    const val VIDEO_LIMIT_TIME = 0x82    // GLASS_VIDEO_LIMIT_TIME
+    const val AUDIO_LIMIT_TIME = 0x83    // GLASS_AUDIO_LIMIT_TIME
+    const val AUTH_STATE = 0x8B          // SET_SERVICE_AUTH_STATE
+    /** CONFIG_GLASS_BRIGHTNESS: один байт. Обратного чтения протокол не даёт. */
+    const val BRIGHTNESS = 0x8C
+    const val VOLUME = 0x8E              // CONFIG_GLASS_VOLUME
+    const val RESOLUTION = 0x93          // GLASS_RESOLUTION, уровни 0..3
+    const val SCREEN_SWITCH = 0x9A       // GLASS_SCREEN_SWITCH, 0/1
 }
 
 /**
