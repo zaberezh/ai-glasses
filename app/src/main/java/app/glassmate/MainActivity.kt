@@ -67,6 +67,12 @@ class MainActivity : Activity(), Host {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // приложение открыли — скорее всего, сейчас будут снимать: будим камеру заранее
+        Core.warmCamera()
+    }
+
     override fun onDestroy() {
         ui.cancel()
         super.onDestroy()

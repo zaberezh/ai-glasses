@@ -28,7 +28,7 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
     private val input = socket.inputStream
     private val output = socket.outputStream
     private val encoder = FrameEncoder()
-    private val decoder = FrameDecoder()
+    private val decoder = FrameDecoder(onForeign = ::answerStarBurst)
     private val writeLock = Any()
     /** Ожидающие ответа запросы: команда -> ответ. Разные команды не ждут друг друга. */
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<ByteArray>>()
@@ -40,6 +40,16 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
     private val _notifications = MutableSharedFlow<Message>(extraBufferCapacity = 512)
     /** Уведомления от очков (и редкие запросы, которые очки шлют сами). */
     val notifications: SharedFlow<Message> = _notifications
+
+    /**
+     * Прямые приёмники потоковых данных (куски снимка): вызываются сразу в потоке чтения.
+     * Через общий SharedFlow их пускать нельзя — при быстрой передаче его буфер
+     * переполняется и куски теряются.
+     */
+    private val sinks = ConcurrentHashMap<Int, (Message) -> Unit>()
+
+    fun setSink(cmd: Int, sink: (Message) -> Unit) { sinks[cmd] = sink }
+    fun clearSink(cmd: Int) { sinks.remove(cmd) }
 
     /** Вызывается один раз, когда соединение закрылось (с любой стороны). */
     @Volatile var onClosed: (() -> Unit)? = null
@@ -58,14 +68,10 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
                 if (n < 0) break
                 if (n == 0) continue
                 val chunk = buf.copyOf(n)
-                if (isStarBurst(chunk)) {
-                    answerStarBurst(chunk)
-                    continue
-                }
                 val msgs = decoder.feed(chunk)
-                if (Core.settings.verboseLog) {
-                    val big = msgs.any { it.cmd == Cmd.AI_PIC_PUSH || it.cmd == Cmd.LIVE_STREAM }
-                    if (!big) Core.log("⇠ ${chunk.toHex(40)}")
+                // во время передачи снимка байты в журнал не пишем — это тормозит приём
+                if (Core.settings.verboseLog && sinks.isEmpty() && msgs.none { it.cmd == Cmd.LIVE_STREAM }) {
+                    Core.log("⇠ ${chunk.toHex(40)}")
                 }
                 for (m in msgs) dispatch(m)
             }
@@ -83,6 +89,11 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
                 return
             }
         }
+        val sink = sinks[m.cmd]
+        if (sink != null) {
+            runCatching { sink(m) }
+            return
+        }
         _notifications.tryEmit(m)
     }
 
@@ -91,9 +102,6 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
      * AIBuds отвечает на «рукопожатие» 0x60 пакетом [0x00][seq][0xF0][0x60][шаг+1][0x00];
      * без ответа очки повторяют его и медленнее обрабатывают остальные команды.
      */
-    private fun isStarBurst(c: ByteArray) =
-        c.size >= 4 && (c[0].toInt() and 0xF0) == 0x10 && c[2] == 0xF0.toByte()
-
     private fun answerStarBurst(c: ByteArray) {
         val cmd = c[3].toInt() and 0xFF
         if (Core.settings.verboseLog) Core.log("⇠ SB ${c.toHex(24)}")
@@ -111,7 +119,8 @@ class GlassesLink private constructor(private val socket: BluetoothSocket) {
         if (!isOpen) throw IOException("Очки не подключены")
         val frames = encoder.encode(cmd, payload)
         synchronized(writeLock) {
-            for (f in frames) output.write(f)
+            // одним куском: меньше пакетов Bluetooth и команда не рвётся посередине
+            output.write(if (frames.size == 1) frames[0] else frames.reduce { a, b -> a + b })
             output.flush()
         }
         if (Core.settings.verboseLog) Core.log("⇢ ${frames.joinToString(" ") { it.toHex(24) }}")

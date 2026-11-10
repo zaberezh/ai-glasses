@@ -37,6 +37,8 @@ class GlassesService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android перезапустил службу после нехватки памяти — возвращаем связь с очками
+        if (intent == null) Core.autoConnect()
         when (intent?.action) {
             ACTION_ASK -> Core.assistant.trigger("уведомление")
             ACTION_LOOK -> Core.assistant.look()
@@ -131,7 +133,7 @@ class GlassesService : Service() {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY,
             KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> Core.assistant.trigger("кнопка плей/пауза")
             KeyEvent.KEYCODE_MEDIA_NEXT -> Core.assistant.look()
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> Core.assistant.voice.stopSpeaking()
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> Core.assistant.stop()
             else -> Core.log("Медиакнопка: ${KeyEvent.keyCodeToString(code)}")
         }
     }

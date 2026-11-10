@@ -2,9 +2,11 @@ package app.glassmate.glasses
 
 import app.glassmate.Core
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineStart
+import android.os.SystemClock
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -19,7 +21,8 @@ class Glasses(private val link: GlassesLink) {
     suspend fun onConnected() {
         setTime()
         link.request(Cmd.COPROCESSOR_INFO, timeoutMs = 3000)
-        val info = deviceInfo(Info.NAME, Info.FIRMWARE, Info.POWER, Info.DEVICE_ABILITY)
+        val info = deviceInfo(Info.NAME, Info.FIRMWARE, Info.POWER, Info.DEVICE_ABILITY, Info.MAX_PACKET_SIZE)
+        info[Info.MAX_PACKET_SIZE]?.let { Core.log("Размер пакета очков: ${it.toHex()}") }
         info[Info.DEVICE_ABILITY]?.let { Core.onAbilities(it, "ответ 0x27, ключ 0xFE") }
         info[Info.NAME]?.cString()?.takeIf { it.isNotBlank() }?.let {
             Core.deviceName.value = it
@@ -109,36 +112,65 @@ class Glasses(private val link: GlassesLink) {
     suspend fun workState(): Int? = status(link.request(Cmd.WORK_STATE))
 
     /**
+     * Будит камеру очков заранее. Камерой управляет отдельный сопроцессор, который
+     * спит и загружается несколько секунд. Запросы его состояния, памяти и числа
+     * файлов — то, что делает приложение очков при открытии; после них сопроцессор
+     * уже работает, и снимок или запись начинаются без ожидания загрузки.
+     * Команды только читают данные. Время каждого ответа попадает в журнал.
+     */
+    suspend fun warmUp(force: Boolean = false) {
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastWarmAt < WARM_INTERVAL_MS) return
+        lastWarmAt = now
+        for (cmd in WARM_COMMANDS) {
+            if (!link.isOpen) return
+            runCatching { link.request(cmd, timeoutMs = 8000) }
+        }
+    }
+
+    /**
      * ИИ-снимок: очки делают кадр и присылают JPEG кусками по Bluetooth
      * (уведомления 0xE3: [status][данные], status 1 — будет ещё, 0 — последний).
      */
-    suspend fun captureAiPhoto(timeoutMs: Long = 30000): ByteArray = coroutineScope {
-        val out = ByteArrayOutputStream()
-        val done = CompletableDeferred<Unit>()
-        val collector = launch(start = CoroutineStart.UNDISPATCHED) {
-            link.notifications.collect { m ->
-                if (m.cmd != Cmd.AI_PIC_PUSH || m.payload.isEmpty()) return@collect
+    suspend fun captureAiPhoto(timeoutMs: Long = 30000): ByteArray = captureLock.withLock {
+        coroutineScope {
+            val out = ByteArrayOutputStream()
+            val done = CompletableDeferred<Unit>()
+            val t0 = SystemClock.elapsedRealtime()
+            var firstAt = 0L
+            // куски принимаем прямо в потоке чтения — так ни один не теряется
+            link.setSink(Cmd.AI_PIC_PUSH) { m ->
+                if (m.payload.isEmpty()) return@setSink
                 when (val st = m.payload[0].toInt() and 0xFF) {
                     0, 1 -> {
-                        out.write(m.payload, 1, m.payload.size - 1)
+                        // Хвост прошлого, отменённого снимка: ждём начало нового JPEG (FF D8)
+                        val isStart = m.payload.size >= 3 && m.payload[1] == 0xFF.toByte() && m.payload[2] == 0xD8.toByte()
+                        if (firstAt == 0L && !isStart) return@setSink
+                        if (firstAt == 0L) firstAt = SystemClock.elapsedRealtime()
+                        synchronized(out) { out.write(m.payload, 1, m.payload.size - 1) }
                         if (st == 0) done.complete(Unit)
                     }
                     else -> done.completeExceptionally(IOException("очки вернули ошибку снимка ($st)"))
                 }
             }
-        }
-        try {
-            // Ответ может не прийти, пока камера просыпается, — тогда просто ждём сам снимок
-            val r = link.request(Cmd.CAMERA_SHOT, byteArrayOf(1), CAMERA_TIMEOUT)
-            val code = status(r)
-            if (r != null && code != 0) Core.log("Ответ очков на ИИ-снимок: $code")
-            val finished = withTimeoutOrNull(timeoutMs) { done.await() } != null
-            val bytes = out.toByteArray()
-            if (!finished && !looksLikeJpeg(bytes)) throw IOException("снимок не пришёл за ${timeoutMs / 1000} с")
-            if (bytes.isEmpty()) throw IOException("пустой снимок")
-            bytes
-        } finally {
-            collector.cancel()
+            // Ответ на команду может прийти позже самого снимка или не прийти вовсе — его не ждём
+            val req = launch {
+                val code = runCatching { status(link.request(Cmd.CAMERA_SHOT, byteArrayOf(1), CAMERA_TIMEOUT)) }.getOrNull()
+                if (code != null && code != 0) Core.log("Ответ очков на ИИ-снимок: $code")
+            }
+            try {
+                val finished = withTimeoutOrNull(timeoutMs) { done.await() } != null
+                val bytes = synchronized(out) { out.toByteArray() }
+                if (!finished && !looksLikeJpeg(bytes)) throw IOException("снимок не пришёл за ${timeoutMs / 1000} с")
+                if (bytes.isEmpty()) throw IOException("пустой снимок")
+                val now = SystemClock.elapsedRealtime()
+                Core.log("ИИ-снимок: ${bytes.size / 1024} КБ, первый кусок через ${firstAt - t0} мс, весь за ${now - t0} мс")
+                lastWarmAt = now
+                bytes
+            } finally {
+                link.clearSink(Cmd.AI_PIC_PUSH)
+                req.cancel()
+            }
         }
     }
 
@@ -158,6 +190,14 @@ class Glasses(private val link: GlassesLink) {
 
     companion object {
         const val CAMERA_TIMEOUT = 25_000L
+
+        /** Снимки идут по одному: два одновременных перемешали бы куски JPEG. */
+        private val captureLock = Mutex()
+
+        /** Запросы, которыми будим сопроцессор камеры. */
+        private val WARM_COMMANDS = intArrayOf(Cmd.COPROCESSOR_INFO, Cmd.STORAGE_INFO, Cmd.MEDIA_FILE_COUNT)
+        private const val WARM_INTERVAL_MS = 20_000L
+        @Volatile private var lastWarmAt = 0L
 
         /** Байт заряда: бит 7 — заряжается, младшие 7 бит — процент. */
         fun parsePower(b: Byte): Pair<Int, Boolean> = (b.toInt() and 0x7F) to ((b.toInt() and 0x80) != 0)

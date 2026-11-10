@@ -233,34 +233,54 @@ class FrameEncoder(var maxPayload: Int = 15) {
 }
 
 /**
- * Собирает сообщения из прочитанных кусков. По тому же каналу очки шлют
- * пакеты другого протокола (облачный ИИ StarBurst), их пропускаем — так же
- * поступает и официальное приложение.
+ * Собирает сообщения из потока байт. Поток режется на куски как попало: кадр
+ * может начаться в одном чтении и закончиться в следующем, поэтому хвост
+ * незаконченного кадра хранится до следующего куска. Раньше такой кадр терялся —
+ * вместе с ответом на команду или куском снимка.
+ *
+ * По тому же каналу очки шлют пакеты другого протокола (облачный ИИ StarBurst):
+ * [0x1X][seq][0xF0][cmd]… Их длина неизвестна, поэтому всё от такого заголовка
+ * до конца куска отдаётся в onForeign и в разбор ABMate не попадает.
  */
-class FrameDecoder {
+class FrameDecoder(private val onForeign: (ByteArray) -> Unit = {}) {
     private var cmd = -1
     private var type = -1
     private var total = 0
     private var expected = 0
     private val buf = ByteArrayOutputStream()
 
-    fun feed(chunk: ByteArray): List<Message> {
+    /** Хвост незаконченного кадра и время, когда он пришёл. */
+    private var rest = ByteArray(0)
+    private var restAt = 0L
+
+    fun feed(chunk: ByteArray, nowMs: Long = System.nanoTime() / 1_000_000): List<Message> {
         val out = ArrayList<Message>()
+        // Чужой пакет ищем только на границе кадров (в цикле ниже): середина кадра —
+        // это произвольные байты снимка, и они могут случайно совпасть с его заголовком.
+        // Хвост ждёт продолжения недолго: если это был мусор, он не должен портить следующие кадры
+        val data = if (rest.isNotEmpty() && nowMs - restAt <= REST_TTL_MS) rest + chunk else chunk
+        rest = ByteArray(0)
         var p = 0
-        while (chunk.size - p >= 5) {
-            val c = chunk[p + 1].toInt() and 0xFF
-            val t = chunk[p + 2].toInt() and 0xFF
-            val frag = chunk[p + 3].toInt() and 0xFF
-            val len = chunk[p + 4].toInt() and 0xFF
-            if (t !in 1..3 || chunk.size - p - 5 < len) {
+        while (p < data.size) {
+            if (isForeign(data, p)) {
+                onForeign(data.copyOfRange(p, data.size))
+                return out
+            }
+            if (data.size - p < 5) break // заголовок ещё не пришёл целиком
+            val c = data[p + 1].toInt() and 0xFF
+            val t = data[p + 2].toInt() and 0xFF
+            val frag = data[p + 3].toInt() and 0xFF
+            val len = data[p + 4].toInt() and 0xFF
+            val index = frag and 0x0F
+            val count = ((frag shr 4) and 0x0F) + 1
+            if (t !in 1..3 || index >= count) {
                 // Не наш кадр: ищем дальше начало следующего кадра ABMate
                 p++
                 continue
             }
-            val payload = chunk.copyOfRange(p + 5, p + 5 + len)
+            if (data.size - p - 5 < len) break // кадр разрезан — ждём следующий кусок
+            val payload = data.copyOfRange(p + 5, p + 5 + len)
             p += 5 + len
-            val index = frag and 0x0F
-            val count = ((frag shr 4) and 0x0F) + 1
             if (index == 0) {
                 reset()
                 cmd = c; type = t; total = count
@@ -275,11 +295,22 @@ class FrameDecoder {
                 reset()
             }
         }
+        if (p < data.size) {
+            rest = data.copyOfRange(p, data.size)
+            restAt = nowMs
+        }
         return out
     }
+
+    private fun isForeign(d: ByteArray, p: Int) =
+        d.size - p >= 4 && (d[p].toInt() and 0xF0) == 0x10 && d[p + 2] == 0xF0.toByte()
 
     private fun reset() {
         cmd = -1; type = -1; total = 0; expected = 0
         buf.reset()
+    }
+
+    companion object {
+        const val REST_TTL_MS = 500L
     }
 }

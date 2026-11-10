@@ -6,6 +6,7 @@ import android.app.Activity
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.view.View
 import app.glassmate.Core
 import app.glassmate.GlassesService
@@ -98,44 +99,105 @@ object Actions {
         }
     }
 
+    // Кнопки камеры реагируют сразу: команда уходит в ту же секунду, состояние на экране
+    // меняется, не дожидаясь ответа очков. Если очки откажут — состояние вернётся.
+
     fun photo(h: Host) {
-        if (Core.glasses != null) h.toast("Снимаю… камера включается до 10 секунд")
-        runOnGlasses(h, "Фото") { g ->
-            when (g.takePhoto()) {
-                0 -> "Фото сохранено на очках"
-                null -> "Команда отправлена — очки отвечают с задержкой"
-                else -> "Очки отказались фотографировать (занята камера?)"
+        val g = requireGlasses(h) ?: return
+        h.toast("Снимаю…")
+        Core.scope.launch {
+            val t0 = SystemClock.elapsedRealtime()
+            val msg = try {
+                when (g.takePhoto()) {
+                    0 -> "Фото сохранено на очках (${secs(t0)})"
+                    null -> "Очки не подтвердили снимок"
+                    else -> "Очки отказались фотографировать (занята камера?)"
+                }
+            } catch (e: Exception) {
+                "Фото: ${e.message}"
+            }
+            Core.log(msg)
+            h.ui.launch { h.toast(msg) }
+        }
+    }
+
+    fun toggleVideo(h: Host) = toggleRecording(h, "video", "видеозапись") { it.startVideo() }
+
+    fun toggleAudio(h: Host) = toggleRecording(h, "audio", "аудиозапись") { it.startAudio() }
+
+    private fun toggleRecording(h: Host, kind: String, name: String, start: suspend (Glasses) -> Int?) {
+        val g = requireGlasses(h) ?: return
+        if (Core.recording.value != null) {
+            Core.recording.value = null
+            h.toast("Запись остановлена")
+            Core.scope.launch {
+                val r = runCatching { g.stopCamera() }.getOrNull()
+                Core.log("Стоп записи: ${if (r == null) "очки не ответили" else "код $r"}")
+            }
+            return
+        }
+        Core.recording.value = kind
+        Core.scope.launch {
+            val t0 = SystemClock.elapsedRealtime()
+            val code = try {
+                start(g)
+            } catch (e: Exception) {
+                if (Core.recording.value == kind) Core.recording.value = null
+                Core.log("Старт записи ($name): ${e.message}")
+                h.ui.launch { h.toast("Запись не началась: ${e.message}") }
+                return@launch
+            }
+            when (code) {
+                0 -> Core.log("Идёт $name, очки подтвердили за ${secs(t0)}")
+                null -> Core.log("Старт записи ($name): очки не ответили — проверьте индикатор на очках")
+                else -> {
+                    if (Core.recording.value == kind) Core.recording.value = null
+                    Core.log("Очки не начали запись ($name), код $code")
+                    h.ui.launch { h.toast("Очки не начали запись") }
+                }
             }
         }
     }
 
-    fun toggleVideo(h: Host) = runOnGlasses(h, "Видео") { g ->
-        if (Core.recording.value != null) {
-            g.stopCamera(); Core.recording.value = null; "Запись остановлена"
-        } else {
-            h.ui.launch { h.toast("Включаю камеру…") }
-            when (g.startVideo()) {
-                0 -> { Core.recording.value = "video"; "Идёт видеозапись" }
-                null -> { Core.recording.value = "video"; "Команда отправлена — проверьте индикатор на очках" }
-                else -> "Очки не начали запись"
-            }
-        }
-    }
+    private fun secs(t0: Long) = "%.1f с".format((SystemClock.elapsedRealtime() - t0) / 1000.0)
 
-    fun toggleAudio(h: Host) = runOnGlasses(h, "Аудио") { g ->
-        if (Core.recording.value != null) {
-            g.stopCamera(); Core.recording.value = null; "Запись остановлена"
-        } else {
-            when (g.startAudio()) {
-                0 -> { Core.recording.value = "audio"; "Идёт аудиозапись" }
-                null -> { Core.recording.value = "audio"; "Команда отправлена — проверьте индикатор на очках" }
-                else -> "Очки не начали запись"
+    /**
+     * Замер скорости камеры: три снимка на память очков подряд и время ответа на каждый,
+     * между ними — запросы, которыми будим камеру. По журналу видно, сколько занимает
+     * «холодный» снимок, сколько повторный и помогает ли пробуждение.
+     */
+    fun cameraSpeedTest(h: Host) {
+        val g = requireGlasses(h) ?: return
+        h.toast("Тест камеры: около 40 секунд, очки сделают 3 снимка")
+        Core.scope.launch {
+            val res = ArrayList<String>()
+            suspend fun shot(label: String) {
+                val t0 = SystemClock.elapsedRealtime()
+                val r = runCatching { g.takePhoto() }.getOrNull()
+                val line = "$label: ${if (r == null) "нет ответа" else "код $r"} за ${secs(t0)}"
+                Core.log("Тест камеры — $line")
+                res += line
+            }
+            Core.log("Тест камеры: начало")
+            shot("1-й снимок (как есть)")
+            shot("2-й снимок (сразу следом)")
+            Core.log("Тест камеры: пауза 20 с, чтобы камера уснула")
+            kotlinx.coroutines.delay(20_000)
+            val t0 = SystemClock.elapsedRealtime()
+            runCatching { g.warmUp(force = true) }
+            Core.log("Тест камеры — пробуждение заняло ${secs(t0)}")
+            shot("3-й снимок (после пробуждения)")
+            Core.log("Тест камеры: конец")
+            h.ui.launch {
+                h.ctx.dialog().setTitle("Тест камеры")
+                    .setMessage(res.joinToString("\n") + "\n\nПодробности — в журнале (кнопка «Копировать»).")
+                    .setPositiveButton("ОК", null).show()
             }
         }
     }
 
     fun aiPhoto(h: Host) = runOnGlasses(h, "ИИ-снимок") { g ->
-        h.ui.launch { h.toast("Снимаю… до 10 секунд") }
+        h.ui.launch { h.toast("Снимаю…") }
         val raw = g.captureAiPhoto()
         Core.assistant.prepareImage(raw)
         Core.addChat(Core.ChatItem(true, "Снимок с камеры очков", Core.lastImage.value))

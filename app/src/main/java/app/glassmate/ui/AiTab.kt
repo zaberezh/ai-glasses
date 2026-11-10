@@ -152,13 +152,14 @@ fun aiTab(h: Host): View = with(h.ctx) {
                 }, lin(WRAP, WRAP, bottom = dp(6)))
             }
             addView(label(item.text, 16f).apply {
+                tag = "text"
                 maxWidth = maxW
                 setLineSpacing(0f, 1.15f)
                 setPadding(dp(16), dp(12), dp(16), dp(12))
                 background = rounded(if (item.fromUser) Col.BUBBLE else Col.CARD, dp(20).toFloat())
                 setOnLongClickListener {
                     getSystemService(ClipboardManager::class.java)
-                        ?.setPrimaryClip(ClipData.newPlainText("GlassMate", item.text))
+                        ?.setPrimaryClip(ClipData.newPlainText("GlassMate", text))
                     h.toast("Скопировано")
                     true
                 }
@@ -187,8 +188,21 @@ fun aiTab(h: Host): View = with(h.ctx) {
         ).apply { gravity = Gravity.CENTER }, lin(WRAP, WRAP, top = dp(8)))
     }
 
+    var shown: List<Core.ChatItem> = emptyList()
     h.ui.launch {
         Core.chat.collect { items ->
+            // Поменялся только текст последнего сообщения (ответ дописывается) — правим его на месте
+            val prev = shown
+            shown = items
+            val n = items.size
+            if (n > 0 && n == prev.size && list.childCount == n &&
+                (0 until n - 1).all { items[it] === prev[it] } && items[n - 1].image === prev[n - 1].image &&
+                items[n - 1].fromUser == prev[n - 1].fromUser
+            ) {
+                list.getChildAt(n - 1).findViewWithTag<android.widget.TextView>("text")?.text = items[n - 1].text
+                scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                return@collect
+            }
             list.removeAllViews()
             if (items.isEmpty()) {
                 list.gravity = Gravity.CENTER
@@ -208,7 +222,7 @@ fun aiTab(h: Host): View = with(h.ctx) {
             state.text = shown
             state.visibility = if (shown.isEmpty()) View.GONE else View.VISIBLE
             val rr = dp(25).toFloat()
-            mainButton.background = clickable(rounded(if (st == "Слушаю…") Col.RED else Col.ACCENT, rr), rr)
+            mainButton.background = clickable(rounded(if (st == app.glassmate.Assistant.LISTENING) Col.RED else Col.ACCENT, rr), rr)
             val cr = dp(18).toFloat()
             liveChip.background = clickable(rounded(if (live) Col.RED else Col.CARD2, cr), cr)
             liveChip.text = if (live) "■ Стоп" else "● Live"

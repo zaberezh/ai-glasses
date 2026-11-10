@@ -183,6 +183,17 @@ fun settingsScreen(h: Host): View = h.screen("Настройки") { c ->
         gap(c)
         c.addView(arrowRow(R.drawable.ic_bluetooth, "Подключение очков") { Actions.connectDialog(h) }.first)
         gap(c)
+        c.addView(switchRow(R.drawable.ic_camera, "Будить камеру заранее",
+            "При подключении и открытии приложения — чтобы фото и видео начинались без ожидания", s.warmCamera) {
+            s.warmCamera = it
+            if (it) Core.warmCamera()
+        })
+        gap(c)
+        c.addView(arrowRow(R.drawable.ic_camera, "Тест скорости камеры",
+            "Три снимка подряд с замером времени — результат в окне и в журнале") {
+            Actions.cameraSpeedTest(h)
+        }.first)
+        gap(c)
         c.addView(arrowRow(R.drawable.ic_videocam, "Проверить видеопоток по Bluetooth",
             "Тест: включает трансляцию камеры на 6 секунд и пишет в журнал, что пришло") {
             Actions.testBtStream(h)

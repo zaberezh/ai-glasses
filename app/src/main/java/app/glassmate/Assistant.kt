@@ -6,14 +6,15 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.provider.MediaStore
 import app.glassmate.ai.AiClient
+import app.glassmate.ai.Net
 import app.glassmate.voice.Voice
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Голосовой ассистент: слушает вопрос через микрофон очков, одновременно делает
@@ -23,10 +24,16 @@ class Assistant(private val ctx: Context) {
 
     val voice = Voice(ctx)
     private val history = ArrayList<AiClient.Turn>()
-    private val busy = AtomicBoolean(false)
+    private var job: Job? = null
 
-    /** Вопрос голосом. */
-    fun trigger(source: String) = start(source, typed = null)
+    /** Вопрос голосом. Повторное нажатие, пока идёт запись вопроса, отменяет её. */
+    fun trigger(source: String) {
+        if (Core.assistantState.value == LISTENING) {
+            stop()
+            return
+        }
+        start(source, typed = null)
+    }
 
     /** «Что я вижу?» — без голоса, с вопросом из настроек, снимок обязателен. */
     fun look() = start("что я вижу", typed = Core.settings.lookQuestion, forcePhoto = true)
@@ -34,21 +41,37 @@ class Assistant(private val ctx: Context) {
     /** Вопрос текстом из приложения. */
     fun askText(text: String) = start("текст", typed = text)
 
+    /** Прервать всё: запись вопроса, ожидание модели и озвучку. */
+    @Synchronized
+    fun stop() {
+        job?.cancel()
+        voice.stopSpeaking()
+    }
+
     fun clearHistory() {
         synchronized(history) { history.clear() }
+        lastJpeg = null
         Core.chat.value = emptyList()
         Core.log("История диалога очищена")
     }
 
+    /**
+     * Новый вопрос не ждёт, пока договорит прошлый ответ: старый прерывается.
+     * Раньше в это время приложение молча отбрасывало вопрос.
+     */
+    @Synchronized
     private fun start(source: String, typed: String?, forcePhoto: Boolean = false) {
-        if (!busy.compareAndSet(false, true)) {
-            Core.log("Ассистент уже занят")
-            return
+        val old = job
+        if (old?.isActive == true) {
+            old.cancel()
+            voice.stopSpeaking()
         }
-        Core.scope.launch {
+        job = Core.scope.launch {
+            old?.join()
             try {
                 process(source, typed, forcePhoto)
             } catch (e: CancellationException) {
+                Core.log("Ассистент: прервано")
                 throw e
             } catch (e: Exception) {
                 Core.log("Ошибка ассистента: ${e.message}")
@@ -56,7 +79,6 @@ class Assistant(private val ctx: Context) {
                 runCatching { voice.speak("Ошибка. ${e.message?.take(100) ?: ""}", Core.settings.language) }
             } finally {
                 Core.assistantState.value = ""
-                busy.set(false)
             }
         }
     }
@@ -75,6 +97,8 @@ class Assistant(private val ctx: Context) {
         }
         Core.log("Ассистент: $source")
         val glasses = Core.glasses
+        // пока слушаем вопрос и снимаем — заранее открываем соединение с сервером модели
+        runCatching { Net.warm(AiClient(s).endpoint()) }
         val t0 = android.os.SystemClock.elapsedRealtime()
 
         // Свежий кадр из «живого взгляда» — снимать не нужно
@@ -90,7 +114,7 @@ class Assistant(private val ctx: Context) {
             } else null
 
         val question = typed ?: run {
-            Core.assistantState.value = "Слушаю…"
+            Core.assistantState.value = LISTENING
             voice.beep()
             voice.listen(s.language, s.useGlassesMic)
         }
@@ -154,6 +178,8 @@ class Assistant(private val ctx: Context) {
     }
 
     companion object {
+        const val LISTENING = "Слушаю…"
+
         /** Вопрос про то, что перед глазами. */
         private val visual = Regex(
             "(что|кто|какой|какая|какое|какие|чей|сколько|где)\\s+(это|тут|здесь|там|передо мной|вижу|видно|на (нём|ней|экране|столе|фото|картинке|улице))|" +

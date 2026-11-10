@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothManager
 import android.graphics.Bitmap
 import android.util.Log
 import app.glassmate.glasses.Cmd
+import app.glassmate.glasses.FrameType
 import app.glassmate.glasses.GlassAbility
 import app.glassmate.glasses.Glasses
 import app.glassmate.glasses.GlassesLink
@@ -20,6 +21,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -82,7 +84,7 @@ object Core {
     val glasses: Glasses? get() = link?.takeIf { it.isOpen }?.let { Glasses(it) }
 
     private var watchJob: Job? = null
-    private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private val timeFmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     fun init(app: Application) {
         this.app = app
@@ -96,25 +98,37 @@ object Core {
         logLines.update { (it + line).takeLast(300) }
     }
 
+    /** Пользователь хочет быть на связи: после обрыва подключаемся снова сами. */
+    @Volatile private var wantConnected = false
+    private var connectJob: Job? = null
+    private var reconnectJob: Job? = null
+
+    /** Подключиться к очкам. silent — фоновая попытка: без диалога об ошибке. */
     @SuppressLint("MissingPermission")
-    fun connect(address: String) {
-        scope.launch(Dispatchers.IO) {
-            disconnect()
+    @Synchronized
+    fun connect(address: String, silent: Boolean = false) {
+        wantConnected = true
+        if (!silent) reconnectJob?.cancel()
+        connectJob?.cancel()
+        connectJob = scope.launch(Dispatchers.IO) {
+            closeLink()
             status.value = "Подключение…"
             try {
                 val adapter = app.getSystemService(BluetoothManager::class.java)!!.adapter
                 val dev = adapter.getRemoteDevice(address)
                 val l = GlassesLink.connect(dev, adapter)
+                // пока шло подключение, его могли отменить или заменить новым
+                if (!wantConnected || !isActive) {
+                    l.close()
+                    return@launch
+                }
                 l.onClosed = {
                     if (link === l) {
                         link = null
-                        connected.value = false
-                        battery.value = null
-                        recording.value = null
-                        abilities.value = null
-                        hideRecord.value = false
+                        resetState()
                         status.value = "Отключено"
                         log("Соединение с очками закрыто")
+                        if (wantConnected) scheduleReconnect(address)
                     }
                 }
                 link = l
@@ -125,11 +139,41 @@ object Core {
                 log("Подключено к ${dev.name ?: address}")
                 watch(l)
                 Glasses(l).onConnected()
+                if (settings.warmCamera) scope.launch { runCatching { Glasses(l).warmUp(force = true) } }
                 pollBattery(l)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                status.value = "Ошибка подключения"
-                log("Ошибка подключения: ${e.message}")
-                connectError.tryEmit(e.message ?: "неизвестная ошибка")
+                if (silent) {
+                    status.value = "Отключено"
+                } else {
+                    status.value = "Ошибка подключения"
+                    log("Ошибка подключения: ${e.message}")
+                    connectError.tryEmit(e.message ?: "неизвестная ошибка")
+                }
+            }
+        }
+    }
+
+    /**
+     * Очки отошли, выключились или легли в футляр — пробуем вернуться сами:
+     * через 3 с, потом реже, но не реже раза в минуту.
+     */
+    @Synchronized
+    private fun scheduleReconnect(address: String) {
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            var wait = 3_000L
+            while (wantConnected && link == null) {
+                kotlinx.coroutines.delay(wait)
+                if (!wantConnected || link != null) break
+                val btOn = runCatching { app.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true }
+                    .getOrDefault(false)
+                if (btOn) {
+                    connect(address, silent = true)
+                    connectJob?.join()
+                }
+                wait = (wait * 2).coerceAtMost(60_000L)
             }
         }
     }
@@ -138,6 +182,13 @@ object Core {
     fun autoConnect() {
         val last = settings.lastDevice
         if (last.isNotEmpty() && link == null && status.value != "Подключение…") connect(last)
+    }
+
+    /** Разбудить камеру заранее (приложение открыли) — чтобы съёмка началась сразу. */
+    fun warmCamera() {
+        if (!settings.warmCamera || recording.value != null) return
+        val g = glasses ?: return
+        scope.launch { runCatching { g.warmUp() } }
     }
 
     /** Заряд раз в минуту — на случай, если очки не присылают его сами. */
@@ -151,10 +202,25 @@ object Core {
         }
     }
 
+    /** Отключиться по желанию пользователя — без автоматического возврата. */
+    @Synchronized
     fun disconnect() {
+        wantConnected = false
+        reconnectJob?.cancel()
+        connectJob?.cancel()
+        closeLink()
+        status.value = "Отключено"
+    }
+
+    private fun closeLink() {
         watchJob?.cancel()
-        link?.close()
-        link = null
+        val l = link
+        link = null // сначала забываем, потом закрываем: onClosed не примет это за обрыв
+        l?.close()
+        resetState()
+    }
+
+    private fun resetState() {
         connected.value = false
         battery.value = null
         recording.value = null
@@ -202,7 +268,8 @@ object Core {
                     }
                     Cmd.POWER -> m.payload.firstOrNull()?.let { battery.value = Glasses.parsePower(it) }
                     0x05 -> log("Очки сообщили новые настройки кнопок: ${m.payload.toHex()}")
-                    else -> log("← 0x%02X: %s".format(m.cmd, m.payload.toHex(24)))
+                    else -> log("← 0x%02X%s: %s".format(
+                        m.cmd, if (m.type == FrameType.REQUEST) " (запрос очков)" else "", m.payload.toHex(24)))
                 }
             }
         }

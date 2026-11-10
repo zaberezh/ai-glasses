@@ -52,14 +52,21 @@ class WifiImporter(private val ctx: Context) {
 
             val listText = String(httpGet(network, URL(URL(base), "media.config")), Charsets.UTF_8)
             val files = parseList(listText)
-            Core.log("Файлов на очках: ${files.size}")
+            // уже скачанное не качаем заново; имена пропавших с очков файлов забываем
+            val known = Core.settings.importedFiles
+            val done = known.intersect(files.toSet()).toMutableSet()
+            val fresh = files.filter { it !in done }
+            Core.log("Файлов на очках: ${files.size}, новых: ${fresh.size}")
             var ok = 0
-            for (name in files) {
+            for (name in fresh) {
                 try {
-                    val data = httpGet(network, URL(URL(base), name))
-                    save(name.substringAfterLast('/'), data)
+                    val t0 = System.currentTimeMillis()
+                    val size = download(network, URL(URL(base), name), name.substringAfterLast('/'))
                     ok++
-                    Core.log("Сохранено: $name (${data.size / 1024} КБ)")
+                    done += name
+                    Core.settings.importedFiles = done
+                    val sec = (System.currentTimeMillis() - t0).coerceAtLeast(1) / 1000.0
+                    Core.log("Сохранено: $name (${size / 1024} КБ, %.0f КБ/с)".format(size / 1024 / sec))
                 } catch (e: Exception) {
                     Core.log("Не удалось скачать $name: ${e.message}")
                 }
@@ -122,6 +129,41 @@ class WifiImporter(private val ctx: Context) {
         }
     }
 
+    /**
+     * Качает файл сразу в галерею, не держа его в памяти: видео на сотни мегабайт
+     * раньше читалось целиком в память и роняло приложение.
+     */
+    private suspend fun download(network: Network, url: URL, name: String): Long = withContext(Dispatchers.IO) {
+        val uri = createEntry(name)
+        val c = network.openConnection(url) as HttpURLConnection
+        try {
+            c.connectTimeout = 10000
+            c.readTimeout = 60000
+            c.setRequestProperty("User-Agent", "TSClient/1.0")
+            if (c.responseCode !in 200..299) throw IOException("HTTP ${c.responseCode}")
+            var total = 0L
+            val out = ctx.contentResolver.openOutputStream(uri) ?: throw IOException("галерея недоступна")
+            out.use { o ->
+                c.inputStream.use { i ->
+                    val buf = ByteArray(256 * 1024)
+                    while (true) {
+                        val n = i.read(buf)
+                        if (n < 0) break
+                        o.write(buf, 0, n)
+                        total += n
+                    }
+                }
+            }
+            ctx.contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+            total
+        } catch (e: Exception) {
+            runCatching { ctx.contentResolver.delete(uri, null, null) } // недокачанный файл в галерее не нужен
+            throw e
+        } finally {
+            c.disconnect()
+        }
+    }
+
     private fun parseList(text: String): List<String> {
         val t = text.trim()
         runCatching {
@@ -135,7 +177,8 @@ class WifiImporter(private val ctx: Context) {
         return t.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
     }
 
-    private fun save(name: String, data: ByteArray) {
+    /** Создаёт в галерее запись под файл (скрытую, пока он не докачан). */
+    private fun createEntry(name: String): android.net.Uri {
         val ext = name.substringAfterLast('.', "").lowercase()
         val (collection, mime, dir) = when (ext) {
             "jpg", "jpeg" -> Triple(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/jpeg", "Pictures/GlassMate")
@@ -150,8 +193,8 @@ class WifiImporter(private val ctx: Context) {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
             put(MediaStore.MediaColumns.RELATIVE_PATH, dir)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = ctx.contentResolver.insert(collection, values) ?: throw IOException("галерея недоступна")
-        ctx.contentResolver.openOutputStream(uri)?.use { it.write(data) }
+        return ctx.contentResolver.insert(collection, values) ?: throw IOException("галерея недоступна")
     }
 }

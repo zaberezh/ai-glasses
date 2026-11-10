@@ -77,6 +77,21 @@ class Settings(ctx: Context) {
         get() = p.getBoolean("autoPhoto", true)
         set(v) = putB("autoPhoto", v)
 
+    /** Будить камеру очков заранее: при подключении и при открытии приложения. */
+    var warmCamera: Boolean
+        get() = p.getBoolean("warmCamera", true)
+        set(v) = putB("warmCamera", v)
+
+    /** Имена файлов, уже импортированных с очков, — чтобы не качать их повторно. */
+    var importedFiles: Set<String>
+        get() = p.getStringSet("importedFiles", emptySet())?.toSet() ?: emptySet()
+        set(v) = p.edit().putStringSet("importedFiles", v).apply()
+
+    /** Последние известные IP-адреса серверов: "host=ip,ip" — на случай сбоя DNS. */
+    var dnsCache: Set<String>
+        get() = p.getStringSet("dnsCache", emptySet())?.toSet() ?: emptySet()
+        set(v) = p.edit().putStringSet("dnsCache", v).apply()
+
     /** Потоковый ответ: быстрее с прямым API, но через некоторые посредники медленнее и рвётся. */
     var streamAnswer: Boolean
         get() = p.getBoolean("streamAnswer", false)

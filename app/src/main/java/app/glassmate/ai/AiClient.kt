@@ -2,8 +2,16 @@ package app.glassmate.ai
 
 import android.util.Base64
 import app.glassmate.Settings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -25,34 +33,58 @@ class AiClient(private val s: Settings) {
     suspend fun ask(
         history: List<Turn>, question: String, jpeg: ByteArray?,
         onDelta: (String) -> Unit = {},
-    ): String = withContext(Dispatchers.IO) {
-        var lastErr: IOException? = null
-        // обрыв соединения (VPN, смена сети) — один раз молча повторяем
-        repeat(3) { attempt ->
-            val sent = StringBuilder()
-            try {
-                return@withContext if (s.provider == "anthropic") anthropic(history, question, jpeg) { sent.append(it); onDelta(it) }
-                else openAi(history, question, jpeg) { sent.append(it); onDelta(it) }
-            } catch (e: HttpError) {
-                throw e
-            } catch (e: IOException) {
-                lastErr = e
-                // если часть ответа уже показана и озвучена, повтор только запутает
-                if (sent.isNotEmpty()) throw e
-                app.glassmate.Core.log("Связь с моделью оборвалась (${e.message}), повторяю…")
-                kotlinx.coroutines.delay(600L * (attempt + 1))
-            }
+    ): String = coroutineScope {
+        // Вопрос отменили (задали новый, нажали «стоп») — обрываем и сетевой запрос, а не ждём его до конца
+        val watcher = launch {
+            try { awaitCancellation() } finally { cancelled = true; call?.cancel() }
         }
-        throw lastErr ?: IOException("нет ответа от модели")
+        try {
+            withContext(Dispatchers.IO) {
+                var lastErr: IOException? = null
+                // обрыв соединения (VPN, смена сети) — молча повторяем
+                repeat(3) { attempt ->
+                    val sent = StringBuilder()
+                    try {
+                        return@withContext if (s.provider == "anthropic") anthropic(history, question, jpeg) { sent.append(it); onDelta(it) }
+                        else openAi(history, question, jpeg) { sent.append(it); onDelta(it) }
+                    } catch (e: HttpError) {
+                        throw e
+                    } catch (e: IOException) {
+                        if (cancelled) throw CancellationException("вопрос отменён")
+                        lastErr = e
+                        // если часть ответа уже показана и озвучена, повтор только запутает
+                        if (sent.isNotEmpty()) throw e
+                        app.glassmate.Core.log("Связь с моделью оборвалась (${e.message}), повторяю…")
+                        delay(600L * (attempt + 1))
+                    }
+                }
+                throw IOException(explain(lastErr))
+            }
+        } finally {
+            call = null
+            watcher.cancel()
+        }
+    }
+
+    @Volatile private var call: Call? = null
+    @Volatile private var cancelled = false
+
+    /** Понятное объяснение сетевой ошибки вместо английского текста системы. */
+    private fun explain(e: IOException?): String = when (e) {
+        null -> "нет ответа от модели"
+        is UnknownHostException ->
+            "не нахожу сервер ${s.baseUrl.ifBlank { "модели" }}. Проверьте интернет и VPN и попробуйте ещё раз"
+        is SocketTimeoutException -> "сервер модели не ответил вовремя"
+        else -> e.message ?: "нет связи с сервером модели"
     }
 
     /** Ошибка от сервера (4xx/5xx) — повторять бессмысленно. */
     class HttpError(val code: Int, msg: String) : IOException(msg)
 
-    /** Поддерживает ли модель параметр reasoning_effort — выясняется на первом запросе. */
-    @Volatile private var effortOk = true
+    /** Адрес, по которому пойдёт запрос, — чтобы заранее открыть соединение (см. Net.warm). */
+    fun endpoint(): String =
+        if (s.provider == "anthropic") normalizeBase(s.baseUrl, "https://api.anthropic.com") else normalizeBase(s.baseUrl, "https://api.openai.com/v1")
 
-    /** Добавляет https:// если адрес вставлен без протокола. */
     /** Приводит адрес к виду https://host/…: дописывает протокол и исправляет опечатки вроде «httpa://». */
     private fun normalizeBase(raw: String, def: String): String {
         var b = raw.trim().ifBlank { def }.trimEnd('/')
@@ -125,13 +157,14 @@ class AiClient(private val s: Settings) {
         messages.put(JSONObject().put("role", "user").put("content", content))
 
         if (s.model.isBlank()) throw IOException("Укажите название модели в настройках")
-        val body = JSONObject().put("model", s.model).put("messages", messages)
-            .put("max_tokens", 300).put("stream", s.streamAnswer)
-        // быстрый режим: модель меньше «размышляет» перед коротким голосовым ответом
-        if (effortOk && s.fastMode) body.put("reasoning_effort", "low")
         // Принимаем host/v1 или полный …/chat/completions; голый адрес дополняем /v1
         var base = normalizeBase(s.baseUrl, "https://api.openai.com/v1").removeSuffix("/chat/completions")
         if (Regex("^https?://[^/]+$").matches(base)) base += "/v1"
+        val body = JSONObject().put("model", s.model).put("messages", messages)
+            .put("max_tokens", 300).put("stream", s.streamAnswer)
+        // быстрый режим: модель меньше «размышляет» перед коротким голосовым ответом
+        val effortKey = "$base|${s.model}"
+        if (s.fastMode && effortKey !in noEffort) body.put("reasoning_effort", "low")
 
         val headers = mapOf("Authorization" to "Bearer ${s.apiKey}")
         val call = { b: JSONObject -> post("$base/chat/completions", b, headers, onDelta,
@@ -149,7 +182,7 @@ class AiClient(private val s: Settings) {
         } catch (e: HttpError) {
             // модель не знает reasoning_effort — больше его не отправляем
             if (e.code == 400 && body.has("reasoning_effort") && (e.message ?: "").contains("reasoning", true)) {
-                effortOk = false
+                noEffort += effortKey
                 body.remove("reasoning_effort")
                 call(body)
             } else throw e
@@ -164,7 +197,10 @@ class AiClient(private val s: Settings) {
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .header("accept", "text/event-stream, application/json")
         headers.forEach { (k, v) -> rb.header(k, v) }
-        Net.client.newCall(rb.build()).execute().use { resp ->
+        val c = Net.client.newCall(rb.build())
+        call = c
+        if (cancelled) c.cancel()
+        c.execute().use { resp ->
             val code = resp.code
             if (code !in 200..299) {
                 val text = resp.body?.string().orEmpty()
@@ -207,5 +243,14 @@ class AiClient(private val s: Settings) {
             if (!finish.isNullOrEmpty() || ev.optString("type") == "message_stop") break
         }
         return sb.toString().trim()
+    }
+
+    companion object {
+        /**
+         * Модели (адрес|название), которые не знают reasoning_effort. Запоминается на всё время
+         * работы приложения: раньше флаг жил один вопрос, и каждый вопрос к такой модели
+         * начинался с лишнего отклонённого запроса.
+         */
+        private val noEffort: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     }
 }
