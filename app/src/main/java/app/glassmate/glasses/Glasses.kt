@@ -19,7 +19,8 @@ class Glasses(private val link: GlassesLink) {
     suspend fun onConnected() {
         setTime()
         link.request(Cmd.COPROCESSOR_INFO, timeoutMs = 3000)
-        val info = deviceInfo(Info.NAME, Info.FIRMWARE, Info.POWER)
+        val info = deviceInfo(Info.NAME, Info.FIRMWARE, Info.POWER, Info.DEVICE_ABILITY)
+        info[Info.DEVICE_ABILITY]?.let { Core.onAbilities(it, "ответ 0x27, ключ 0xFE") }
         info[Info.NAME]?.cString()?.takeIf { it.isNotBlank() }?.let {
             Core.deviceName.value = it
             Core.log("Имя очков: $it")
@@ -40,11 +41,22 @@ class Glasses(private val link: GlassesLink) {
         link.request(Cmd.IN_EAR_DETECT, byteArrayOf(if (on) 1 else 0)) != null
 
     /** Максимальная длительность видео / аудио на очках, в минутах. */
-    suspend fun setVideoLimit(minutes: Int): Boolean =
-        link.request(Cmd.GLASS_CONFIG, byteArrayOf(0x82.toByte(), 1, minutes.toByte())) != null
+    suspend fun setVideoLimit(minutes: Int): Boolean = setConfig(GlassKey.VIDEO_LIMIT_TIME, minutes) != null
 
-    suspend fun setAudioLimit(minutes: Int): Boolean =
-        link.request(Cmd.GLASS_CONFIG, byteArrayOf(0x83.toByte(), 1, minutes.toByte())) != null
+    suspend fun setAudioLimit(minutes: Int): Boolean = setConfig(GlassKey.AUDIO_LIMIT_TIME, minutes) != null
+
+    /** Одно однобайтовое значение настройки: 0xF7 [ключ][1][значение]. Возвращает код ответа. */
+    suspend fun setConfig(key: Int, value: Int): Int? =
+        status(link.request(Cmd.GLASS_CONFIG, byteArrayOf(key.toByte(), 1, value.toByte())))
+
+    /**
+     * Яркость экрана очков: 0xF7 [0x8C][1][уровень].
+     *
+     * Диапазон в SDK не проверяется (там просто int → byte), а прочитать текущее
+     * значение нечем: ключа 0x8C нет ни среди типов DEVICE_INFO, ни в уведомлениях.
+     * Единственный признак поддержки — код ответа: 0 приняли, иное отвергли.
+     */
+    suspend fun setBrightness(level: Int): Int? = setConfig(GlassKey.BRIGHTNESS, level)
 
     suspend fun setTime(): Boolean {
         val nowMs = System.currentTimeMillis()

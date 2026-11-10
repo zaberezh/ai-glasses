@@ -188,6 +188,16 @@ fun settingsScreen(h: Host): View = h.screen("Настройки") { c ->
             Actions.testBtStream(h)
         }.first)
         gap(c)
+        c.addView(arrowRow(R.drawable.ic_eye, "Яркость экрана очков",
+            "Отправляет 0xF7 [0x8C] с выбранным уровнем и пишет в журнал код ответа") {
+            Actions.brightnessDialog(h)
+        }.first)
+        gap(c)
+        c.addView(arrowRow(R.drawable.ic_info, "Опросить экран очков",
+            "Спрашивает 0x9A, 0x93, 0x9C, 0x86, 0x8A — есть ли экран и что он умеет") {
+            Actions.probeScreen(h)
+        }.first)
+        gap(c)
         c.addView(switchRow(R.drawable.ic_list, "Подробный журнал", "Все байты обмена с очками — для отладки", s.verboseLog) {
             s.verboseLog = it
         })

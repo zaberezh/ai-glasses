@@ -58,6 +58,15 @@ object Info {
     const val NAME = 0x03
     const val KEY_SETTINGS = 0x05
     const val VOLUME = 0x06
+    /** Типы очков — из массива glassInfoToRequest в DeviceInfoRequest. */
+    const val GLASS_SN = 0x85
+    const val GLASS_DEVICE_MODEL = 0x86
+    const val AI_CHAT_SUPPORT = 0x8A
+    const val RESOLUTION = 0x93
+    const val SCREEN_SWITCH = 0x9A
+    const val WORD_SPEED = 0x9C
+    /** INFO_DEVICE_ABILITY / INFO_DEVICE_CAPABILITIES: маска способностей, сырые байты. */
+    const val DEVICE_ABILITY = 0xFE
     const val MAX_PACKET_SIZE = 0xFF
 }
 
@@ -85,6 +94,78 @@ object Keys {
         8 to "Игровой режим",
         9 to "Режим шумоподавления",
     )
+}
+
+/**
+ * Ключи TLV для Cmd.GLASS_CONFIG (0xF7) — из GlassConfigRequest в SDK.
+ * Кадр: 0xF7 [ключ][длина][значение].
+ */
+object GlassKey {
+    const val VIDEO_LIMIT_TIME = 0x82    // GLASS_VIDEO_LIMIT_TIME
+    const val AUDIO_LIMIT_TIME = 0x83    // GLASS_AUDIO_LIMIT_TIME
+    const val AUTH_STATE = 0x8B          // SET_SERVICE_AUTH_STATE
+    /** CONFIG_GLASS_BRIGHTNESS: один байт. Обратного чтения протокол не даёт. */
+    const val BRIGHTNESS = 0x8C
+    const val VOLUME = 0x8E              // CONFIG_GLASS_VOLUME
+    const val RESOLUTION = 0x93          // GLASS_RESOLUTION, уровни 0..3
+    const val SCREEN_SWITCH = 0x9A       // GLASS_SCREEN_SWITCH, 0/1
+}
+
+/**
+ * Битовая маска «способностей» очков.
+ *
+ * Сверено с TopStep WearKit SDK 3.0.2.8 (sdk-abmate-adapter.aar):
+ * `com.topstep.wearkit.abmate.internal.ability.speech.SpeechAiProtocolKt`,
+ * `GLASS_ABILITY_HIDE_RECORD = 512`.
+ *
+ * Откуда берётся слово: `DEVICE_INFO` (0x27), ключ TLV `INFO_DEVICE_ABILITY`
+ * = 0xFE, сырые байты (в SDK — `ByteArrayPayloadHandler`, поле `deviceAbility`).
+ * Байты складываются little-endian: `mask or ((b[i] and 0xFF) shl (8 * i))`.
+ *
+ * Как проверяет SDK: `FlagUtil.isFlagEnabled(mask, 512)`, то есть
+ * `(mask and 512) > 0`, а `isAbMateRecordSupported()` возвращает обратное —
+ * и `true`, если слово ещё не приходило. То есть **бит выставлен = запись
+ * не поддерживается и её надо скрыть**, по умолчанию запись доступна.
+ *
+ * HIDE_RECORD = 512 = 0x0200 = `1 shl 9` — девятый бит. Это единственная
+ * константа GLASS_ABILITY_* во всём SDK (проверены все 22 aar), и больше
+ * ни один бит этого слова нигде в SDK не читается. Поэтому describe()
+ * печатает остальные биты номерами — по журналу будет видна вся маска.
+ */
+object GlassAbility {
+    /** 512 = 0x0200 = бит 9: прятать запись (функцию и индикатор) в приложении. */
+    const val HIDE_RECORD = 512
+
+    /** Имена расшифрованных битов. */
+    private val NAMES = mapOf(
+        HIDE_RECORD to "скрывать запись (GLASS_ABILITY_HIDE_RECORD, 512)",
+    )
+
+    /** Слово способностей из payload: 1–4 байта, little-endian. null, если байтов нет. */
+    fun parse(data: ByteArray): Int? {
+        if (data.isEmpty()) return null
+        var v = 0
+        for (i in 0 until minOf(data.size, 4)) v = v or ((data[i].toInt() and 0xFF) shl (8 * i))
+        return v
+    }
+
+    /** Есть ли бит в маске. Как FlagUtil.isFlagEnabled в SDK: строго больше нуля. */
+    fun has(mask: Int?, bit: Int): Boolean = mask != null && (mask and bit) > 0
+
+    /** Поддерживается ли запись. Повторяет isAbMateRecordSupported: без данных — да. */
+    fun isRecordSupported(mask: Int?): Boolean = !has(mask, HIDE_RECORD)
+
+    /** Разбор маски: известные биты по именам, неизвестные — номерами. */
+    fun describe(mask: Int): String {
+        if (mask == 0) return "нет ни одного бита (0)"
+        val parts = ArrayList<String>()
+        for (bit in 0 until 32) {
+            val v = 1 shl bit
+            if ((mask and v) == 0) continue
+            parts += NAMES[v] ?: "бит $bit (0x%04X)".format(v)
+        }
+        return parts.joinToString(", ") + " [маска 0x%04X]".format(mask)
+    }
 }
 
 class Message(val cmd: Int, val type: Int, val payload: ByteArray) {

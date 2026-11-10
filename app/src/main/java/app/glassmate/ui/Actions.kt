@@ -11,6 +11,7 @@ import app.glassmate.Core
 import app.glassmate.GlassesService
 import app.glassmate.WifiImporter
 import app.glassmate.glasses.Glasses
+import app.glassmate.glasses.Info
 import app.glassmate.glasses.toHex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -140,6 +141,41 @@ object Actions {
         Core.addChat(Core.ChatItem(true, "Снимок с камеры очков", Core.lastImage.value))
         h.ui.launch { h.selectTab(1) }
         null
+    }
+
+    /**
+     * Яркость экрана очков (0xF7 [0x8C]). Прочитать текущее значение нечем, поэтому
+     * диалог просто отправляет уровень и пишет в журнал код ответа. Если на нуле
+     * экран погаснет — вернуть видимость можно тем же диалогом.
+     */
+    fun brightnessDialog(h: Host) {
+        requireGlasses(h) ?: return
+        val levels = intArrayOf(0, 25, 50, 100, 128, 255)
+        h.ctx.dialog().setTitle("Яркость экрана очков")
+            .setItems(levels.map { "Уровень $it" }.toTypedArray()) { _, i ->
+                val level = levels[i]
+                runOnGlasses(h, "Яркость") { g ->
+                    when (val st = g.setBrightness(level)) {
+                        0 -> "$level — очки приняли (код 0)"
+                        null -> "$level — очки не ответили"
+                        else -> "$level — очки отвергли, код $st"
+                    }
+                }
+            }.show()
+    }
+
+    /** Диагностика: есть ли у очков экран и что они о нём сообщают. */
+    fun probeScreen(h: Host) = runOnGlasses(h, "Экран") { g ->
+        val info = g.deviceInfo(
+            Info.SCREEN_SWITCH, Info.RESOLUTION, Info.WORD_SPEED,
+            Info.GLASS_DEVICE_MODEL, Info.AI_CHAT_SUPPORT,
+        )
+        if (info.isEmpty()) {
+            "очки не ответили на запрос информации"
+        } else {
+            for ((k, v) in info) Core.log("Экран: тип 0x%02X = %s".format(k, v.toHex()))
+            "ответили на ${info.size} полей — подробности в журнале"
+        }
     }
 
     /** Диагностика: что очки шлют в режиме трансляции (0xE8 без параметров → уведомления 0xBC). */
